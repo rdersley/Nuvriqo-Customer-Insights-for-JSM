@@ -8,6 +8,7 @@ import { licenseAllows, UNLICENSED_MESSAGE } from './license.js';
 const Resolver = ResolverModule.default ?? ResolverModule;
 const resolver = new Resolver();
 const MAX_ISSUES = 1800;
+const FETCH_BUDGET_MS = 15000;
 
 async function readJson(response, label) {
   const body = await response.text();
@@ -54,8 +55,12 @@ resolver.define('analyze', async ({ payload, context }) => {
   const jql = `organizations = "${escapeJql(organization.name)}" AND created >= "${previousStart}" AND created < "${endExclusive}"${projectClause} ORDER BY created DESC`;
   let nextPageToken;
   const issues = [];
+  // Resolvers are killed at 25s. Stop fetching with time left to analyse and
+  // return; the report is then flagged retrievalCapped.
+  const startedAt = Date.now();
+  const fetchDeadline = startedAt + FETCH_BUDGET_MS;
   for (let page = 0; page < 18; page += 1) {
-    const body = { jql, maxResults: 100, fields: ['summary', 'description', 'created', 'updated', 'status', 'issuetype', 'priority', 'project', 'labels', 'components'] };
+    const body = { jql, maxResults: 100, fields: ['summary', 'description', 'created', 'status'] };
     if (nextPageToken) body.nextPageToken = nextPageToken;
     const response = await asUser().requestJira(route`/rest/api/3/search/jql`, {
       method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -63,9 +68,10 @@ resolver.define('analyze', async ({ payload, context }) => {
     const result = await readJson(response, 'Ticket search');
     issues.push(...(result.issues || []));
     nextPageToken = result.nextPageToken;
-    if (!nextPageToken || issues.length >= MAX_ISSUES) break;
+    if (!nextPageToken || issues.length >= MAX_ISSUES || Date.now() > fetchDeadline) break;
   }
   const report = buildReport(issues, startDate, endDate);
+  console.log(`analyze: ${issues.length} issues in ${Date.now() - startedAt}ms`);
   return { ...report, organization: organization.name, startDate, endDate, projectCount: cleanProjects.length || null, totalFetched: issues.length, retrievalCapped: Boolean(nextPageToken) };
 });
 

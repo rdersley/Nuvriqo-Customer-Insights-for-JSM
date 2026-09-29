@@ -17,22 +17,27 @@ export function tokenize(issue) {
   const weights = new Map();
   summaryWords.forEach((w) => weights.set(w, (weights.get(w) || 0) + 2));
   descriptionWords.forEach((w) => weights.set(w, Math.max(weights.get(w) || 0, 1)));
-  return { summary, weights, summaryWords };
+  let total = 0;
+  for (const weight of weights.values()) total += weight;
+  return { summary, weights, summaryWords, summarySet: new Set(summaryWords), total };
 }
 
+// Weighted Jaccard. Called for every pair of tickets, so it is kept cheap: the
+// summary check rejects most pairs first, and sum(max) = sumA + sumB - sum(min)
+// avoids building a union of keys.
 function similarity(a, b) {
-  let intersection = 0;
-  let union = 0;
-  const keys = new Set([...a.weights.keys(), ...b.weights.keys()]);
-  for (const key of keys) {
-    const av = a.weights.get(key) || 0;
-    const bv = b.weights.get(key) || 0;
-    intersection += Math.min(av, bv);
-    union += Math.max(av, bv);
-  }
-  if (!union) return 0;
-  const summaryOverlap = a.summaryWords.filter((word) => b.summaryWords.includes(word)).length;
+  let summaryOverlap = 0;
+  for (const word of a.summaryWords) if (b.summarySet.has(word)) summaryOverlap += 1;
   if (summaryOverlap < 1) return 0;
+  // ids are sorted word numbers (see indexWords), so intersect by merging.
+  let intersection = 0;
+  for (let i = 0, j = 0; i < a.ids.length && j < b.ids.length;) {
+    if (a.ids[i] === b.ids[j]) { intersection += Math.min(a.ws[i], b.ws[j]); i += 1; j += 1; }
+    else if (a.ids[i] < b.ids[j]) i += 1;
+    else j += 1;
+  }
+  const union = a.total + b.total - intersection;
+  if (!union) return 0;
   return (intersection / union) * (summaryOverlap >= 2 ? 1.18 : 1);
 }
 
@@ -45,9 +50,23 @@ function themeName(members) {
   return keywords.length ? keywords.map((word) => word[0].toUpperCase() + word.slice(1)).join(' · ') : 'Similar requests';
 }
 
+/** Adds sorted word-number arrays so similarity() can merge instead of hashing. */
+function indexWords(rows) {
+  const vocabulary = new Map();
+  for (const { tokenized } of rows) {
+    const pairs = [...tokenized.weights].map(([word, weight]) => {
+      if (!vocabulary.has(word)) vocabulary.set(word, vocabulary.size);
+      return [vocabulary.get(word), weight];
+    }).sort((x, y) => x[0] - y[0]);
+    tokenized.ids = Int32Array.from(pairs, ([id]) => id);
+    tokenized.ws = Float64Array.from(pairs, ([, weight]) => weight);
+  }
+}
+
 /** Deterministic, explainable similarity grouping. Bounded for interactive use. */
 export function groupIssues(issues, threshold = 0.31) {
   const rows = issues.slice(0, 900).map((issue) => ({ issue, tokenized: tokenize(issue) }));
+  indexWords(rows);
   const parent = rows.map((_, index) => index);
   const find = (index) => {
     while (parent[index] !== index) {
