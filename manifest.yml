@@ -20,7 +20,7 @@ app:
 permissions:
   scopes:
     - read:jira-work
-    - read:servicedesk-request
+    - read:organization:jira-service-management
   content:
     styles:
       - unsafe-inline
