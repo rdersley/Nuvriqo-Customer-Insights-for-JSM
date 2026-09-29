@@ -38,6 +38,41 @@ test('compares the selected period with the preceding period', () => {
   assert.equal(report.groups[0].previousCount, 2);
 });
 
+// Real Ryanair Crew summaries: "RYR - <crew code> - <airport> - <problem>", with
+// a templated description. Codes and template text must not create patterns.
+const adf = (text) => ({ type: 'doc', version: 1, content: [{ type: 'paragraph', content: [{ type: 'text', text }] }] });
+const template = (problem) => adf(`Crew ID and base are in the summary. Device: vPOS. Please describe the problem: ${problem}`);
+const crewIssues = () => [
+  ['RYR - COCCAM - CAG - P2P', 'p2p transfer failed'],
+  ['RYR - KURVIK - PFO - DEVICE CRASHES', 'app closes during service'],
+  ['RYR - ZAHAIU - OTP - RYR Connect Issue', 'ryr connect will not load'],
+  ['RYR - CAUGAR - TSF', 'tsf'],
+  ['RYR - TAJYOY - FCO - Sales lost all after turn around', 'sales disappeared after turnaround'],
+  ['RYR - BJESSI - DUB - Sales', 'sales question'],
+  ['RYR - DUB - PORCMI - VPOS NOT CHARGING', 'device will not charge'],
+  ['RYR - SHEPAA - MAN - PIN PAD ISSUE', 'pin pad not pairing'],
+  ['RYR - KARAST - STN - New pin pad', 'need a new pin pad'],
+  ['RYR - LOPMAR - BGY - Pin pad not connecting', 'pin pad will not connect to vpos'],
+  ['RYR - WESDAN - STN - pin pad faulty', 'pin pad keeps disconnecting'],
+].map(([summary, problem], i) => issue(`SD-${100 + i}`, summary, `2026-09-${String(10 + (i % 9)).padStart(2, '0')}T10:00:00Z`, template(problem)));
+
+test('shared prefixes, codes and templated descriptions do not create patterns', () => {
+  const groups = groupIssues(crewIssues());
+  const grouped = groups.flatMap((g) => g.tickets.map((t) => t.summary));
+  for (const unrelated of ['RYR - KURVIK - PFO - DEVICE CRASHES', 'RYR - ZAHAIU - OTP - RYR Connect Issue', 'RYR - COCCAM - CAG - P2P', 'RYR - CAUGAR - TSF']) {
+    assert.equal(grouped.includes(unrelated), false, `${unrelated} should not be in a pattern`);
+  }
+});
+
+test('the real repeated problem is still found', () => {
+  const groups = groupIssues(crewIssues());
+  const pinPad = groups.find((g) => g.tickets.some((t) => t.summary.includes('PIN PAD ISSUE')));
+  assert.ok(pinPad, 'pin pad tickets form a pattern');
+  assert.equal(pinPad.count, 4);
+  assert.match(pinPad.theme, /pin/i);
+  assert.equal(pinPad.tickets.every((t) => /pin pad/i.test(t.summary)), true);
+});
+
 test('handles Jira rich text descriptions', () => {
   const issues = [
     issue('SD-1', 'Network issue at gate', '2026-09-10T10:00:00Z', { content: [{ text: 'airport wifi disconnected' }] }),
