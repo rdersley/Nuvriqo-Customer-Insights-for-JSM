@@ -1,6 +1,7 @@
 import Resolver from '@forge/resolver';
 import api, { route } from '@forge/api';
 import { buildReport } from './analysis.js';
+import { licenseAllows, UNLICENSED_MESSAGE } from './license.js';
 
 const resolver = new Resolver();
 const MAX_ISSUES = 1800;
@@ -11,7 +12,9 @@ async function readJson(response, label) {
   return body ? JSON.parse(body) : {};
 }
 
-resolver.define('getOrganizations', async () => {
+// Unlicensed installs get the flag and nothing else, so the page can explain why.
+resolver.define('getOrganizations', async ({ context }) => {
+  if (!licenseAllows(context)) return { licensed: false, organizations: [] };
   const organizations = [];
   let start = 0;
   for (let page = 0; page < 10; page += 1) {
@@ -21,14 +24,15 @@ resolver.define('getOrganizations', async () => {
     if (!data.isLastPage && data.values?.length) start += data.values.length;
     else break;
   }
-  return organizations;
+  return { licensed: true, organizations };
 });
 
 function escapeJql(value) {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
-resolver.define('analyze', async ({ payload }) => {
+resolver.define('analyze', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
   const { organization, startDate, endDate, projects = [] } = payload || {};
   if (!organization?.name || !/^\d{4}-\d{2}-\d{2}$/.test(startDate || '') || !/^\d{4}-\d{2}-\d{2}$/.test(endDate || '')) {
     throw new Error('Choose an organization and valid start and end dates.');

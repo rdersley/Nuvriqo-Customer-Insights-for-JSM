@@ -33,11 +33,14 @@ function App() {
   const [loadingReport, setLoadingReport] = useState(false);
   const [error, setError] = useState('');
   const [queryOpen, setQueryOpen] = useState(false);
+  const [licensed, setLicensed] = useState(true);
 
   useEffect(() => {
     invoke('getOrganizations').then((result) => {
-      setOrgs(result || []);
-      if (result?.length) setOrganizationId(String(result[0].id));
+      const list = result?.organizations || [];
+      setLicensed(result?.licensed !== false);
+      setOrgs(list);
+      if (list.length) setOrganizationId(String(list[0].id));
     }).catch((e) => setError(e.message || 'Could not load customer organisations.'))
       .finally(() => setLoadingOrgs(false));
   }, []);
@@ -83,7 +86,11 @@ function App() {
       actions={report && <Button onClick={exportCsv}>Export CSV</Button>}
     />
 
-    <Card>
+    {!licensed && <Notice kind="warning" title="Customer Insights isn’t licensed on this site">
+      Analysis is unavailable until the app has an active Marketplace licence. Ask a Jira admin to check it in Manage apps.
+    </Notice>}
+
+    {licensed && <Card>
       <form className="nq-filters ci-filters" onSubmit={runAnalysis}>
         <Field label="Customer organisation" htmlFor="ci-org">
           <select id="ci-org" className="nq-select" value={organizationId} onChange={(e) => setOrganizationId(e.target.value)} disabled={loadingOrgs || !orgs.length}>
@@ -106,11 +113,11 @@ function App() {
         </Button>
       </form>
       <p className="nq-muted">Uses tickets shared with this organisation. Results follow your Jira permissions.</p>
-    </Card>
+    </Card>}
 
     {error && <Notice kind="error" title="We couldn’t complete that request.">{error}</Notice>}
 
-    {!report && !loadingReport && !error && <Card>
+    {licensed && !loadingOrgs && !report && !loadingReport && !error && <Card>
       <EmptyState
         title="Find the issues behind the numbers"
         actions={<Button appearance="primary" onClick={runAnalysis} disabled={!selectedOrg}>Analyse {selectedOrg?.name || 'customer tickets'}</Button>}
