@@ -1,8 +1,11 @@
-import Resolver from '@forge/resolver';
-import api, { route } from '@forge/api';
+import ResolverModule from '@forge/resolver';
+import { asUser, route } from '@forge/api';
 import { buildReport } from './analysis.js';
 import { licenseAllows, UNLICENSED_MESSAGE } from './license.js';
 
+// This package is "type": "module"; Forge's bundler then hands CommonJS packages
+// over as their exports object, so the class sits on `.default`.
+const Resolver = ResolverModule.default ?? ResolverModule;
 const resolver = new Resolver();
 const MAX_ISSUES = 1800;
 
@@ -18,7 +21,7 @@ resolver.define('getOrganizations', async ({ context }) => {
   const organizations = [];
   let start = 0;
   for (let page = 0; page < 10; page += 1) {
-    const response = await api.asUser().requestJira(route`/rest/servicedeskapi/organization?start=${start}&limit=50`, { headers: { Accept: 'application/json' } });
+    const response = await asUser().requestJira(route`/rest/servicedeskapi/organization?start=${start}&limit=50`, { headers: { Accept: 'application/json' } });
     const data = await readJson(response, 'Organization lookup');
     organizations.push(...(data.values || []).map(({ id, name }) => ({ id: String(id), name })));
     if (!data.isLastPage && data.values?.length) start += data.values.length;
@@ -54,7 +57,7 @@ resolver.define('analyze', async ({ payload, context }) => {
   for (let page = 0; page < 18; page += 1) {
     const body = { jql, maxResults: 100, fields: ['summary', 'description', 'created', 'updated', 'status', 'issuetype', 'priority', 'project', 'labels', 'components'] };
     if (nextPageToken) body.nextPageToken = nextPageToken;
-    const response = await api.asUser().requestJira(route`/rest/api/3/search/jql`, {
+    const response = await asUser().requestJira(route`/rest/api/3/search/jql`, {
       method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
     const result = await readJson(response, 'Ticket search');
