@@ -27,7 +27,22 @@ A Forge app that analyses visible Jira Service Management tickets for a selected
 6. Install it on the test Jira site: `forge install -e development` and select Jira.
 7. Open **Apps → Customer Insights** in Jira.
 
-After changing scopes or modules, deploy again and upgrade the app installation when Forge prompts you. The app requests `read:jira-work` and `read:servicedesk-request` only.
+After changing scopes or modules, deploy again and upgrade the app installation when Forge prompts you. The app requests `read:jira-work` for ticket searches and `read:organization:jira-service-management` for the organisation picker. Organisation lookup requires this dedicated scope; `read:servicedesk-request` does not authorize that endpoint. Both API calls run as the signed-in user, preserving Jira permissions.
+
+### Upgrading an installation after the organisation permission fix
+
+Deploy the updated code to the same Forge environment as the existing installation, then upgrade **each site** where that environment is installed:
+
+```sh
+npm ci
+npm run build
+forge deploy --environment development
+forge install --upgrade --site nuvriqo.atlassian.net --product jira --environment development --confirm-scopes
+```
+
+Use the installation's actual environment in place of `development` if it is installed in staging or production. The sandbox workflow upgrades only `retailinmotion-sandbox1.atlassian.net`; it does not upgrade `nuvriqo.atlassian.net`.
+
+An administrator must approve the revised installation permissions. Refresh Customer Insights afterward and check that the organisation picker loads, analysis runs, and reopening the page no longer repeats the consent error. Do not repeatedly authorize the old installation: its service-request scope cannot grant access to the organisation endpoint.
 
 ## Local verification
 
