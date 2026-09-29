@@ -35,6 +35,10 @@ After changing scopes or modules, deploy again and upgrade the app installation 
 - `npm run lint` checks the Forge backend JavaScript syntax.
 - `npm run build` builds the Forge Custom UI bundle into `static/app/build`.
 
+## Sandbox deployment
+
+The GitHub Actions workflow `.github/workflows/deploy-sandbox.yml` targets `retailinmotion-sandbox1.atlassian.net` in Forge's `development` environment. After the app is registered and the real app ID is committed to `manifest.yml`, add the repository secrets `FORGE_EMAIL` and `FORGE_API_TOKEN`, then run **Deploy Customer Insights to Sandbox** from the Actions tab. The workflow runs tests and builds the UI before deployment and installation.
+
 ## First-version limits
 
 - Date range is limited to 365 days.
