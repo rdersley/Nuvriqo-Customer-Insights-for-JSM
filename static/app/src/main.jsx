@@ -1,10 +1,26 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { invoke } from '@forge/bridge';
+import { invoke, view } from '@forge/bridge';
+import '@nuvriqo/ui/css';
+import { enableTheme } from '@nuvriqo/ui/theme';
+import { AppHeader, Button, Card, EmptyState, Field, Footer, Kpi, Loading, Lozenge, Notice } from '@nuvriqo/ui/react';
+import { version } from '../../../package.json';
 import './styles.css';
 
+enableTheme(view);
+
+const PRODUCT = 'Customer Insights';
 const dateValue = (date) => date.toISOString().slice(0, 10);
 const daysAgo = (days) => { const d = new Date(); d.setDate(d.getDate() - days); return dateValue(d); };
+const signed = (n) => `${n > 0 ? '+' : ''}${n}`;
+
+// More tickets than last period is the thing to look at, so rises are flagged.
+function TrendLozenge({ group }) {
+  if (!group.previousCount) return <Lozenge kind="discovery">New</Lozenge>;
+  if (group.change > 0) return <Lozenge kind="warning">↑ {group.change}</Lozenge>;
+  if (group.change < 0) return <Lozenge kind="success">↓ {Math.abs(group.change)}</Lozenge>;
+  return <Lozenge>→ 0</Lozenge>;
+}
 
 function App() {
   const [orgs, setOrgs] = useState([]);
@@ -17,12 +33,15 @@ function App() {
   const [loadingReport, setLoadingReport] = useState(false);
   const [error, setError] = useState('');
   const [queryOpen, setQueryOpen] = useState(false);
+  const [licensed, setLicensed] = useState(true);
 
   useEffect(() => {
     invoke('getOrganizations').then((result) => {
-      setOrgs(result || []);
-      if (result?.length) setOrganizationId(String(result[0].id));
-    }).catch((e) => setError(e.message || 'Could not load customer organizations.'))
+      const list = result?.organizations || [];
+      setLicensed(result?.licensed !== false);
+      setOrgs(list);
+      if (list.length) setOrganizationId(String(list[0].id));
+    }).catch((e) => setError(e.message || 'Could not load customer organisations.'))
       .finally(() => setLoadingOrgs(false));
   }, []);
 
@@ -30,10 +49,11 @@ function App() {
   const projects = projectsText.split(/[\s,]+/).map((x) => x.trim().toUpperCase()).filter(Boolean);
   const maxGroup = Math.max(1, ...(report?.groups || []).map((g) => g.count));
   const graphMax = Math.max(1, ...(report?.timeSeries || []).map((p) => p.count));
-  const totalChange = report?.changePercent === null ? 'New baseline' : `${report?.changePercent > 0 ? '+' : ''}${report?.changePercent}%`;
+  const labelEvery = Math.max(1, Math.ceil((report?.timeSeries?.length || 0) / 10));
+  const totalChange = report?.changePercent === null ? 'New baseline' : `${signed(report?.changePercent)}%`;
 
   async function runAnalysis(event) {
-    event.preventDefault();
+    event?.preventDefault();
     if (!selectedOrg) return;
     setLoadingReport(true); setError(''); setReport(null);
     try {
@@ -56,64 +76,139 @@ function App() {
     link.click(); URL.revokeObjectURL(link.href);
   }
 
-  return <main className="shell">
-    <header className="topbar">
-      <div className="brand"><span className="brand-mark">N</span><span>NUVRIQO <i>APPS</i></span></div>
-      <span className="product-label">Jira Service Management</span>
-    </header>
-    <section className="intro">
-      <div className="eyebrow"><span className="eyebrow-dot" /> CUSTOMER INTELLIGENCE</div>
-      <div className="title-row"><div><h1>Customer Insights</h1><p>See recurring issues and what’s changing across a customer’s tickets.</p></div>
-        {report && <button className="export-button" onClick={exportCsv} aria-label="Export report as CSV"><span>↧</span> Export CSV</button>}
-      </div>
-      <form className="filters" onSubmit={runAnalysis}>
-        <label className="field org-field"><span>Customer organisation</span><select value={organizationId} onChange={(e) => setOrganizationId(e.target.value)} disabled={loadingOrgs || !orgs.length}>
-          {loadingOrgs && <option>Loading organisations…</option>}
-          {!loadingOrgs && !orgs.length && <option value="">No organisations found</option>}
-          {orgs.map((org) => <option value={org.id} key={org.id}>{org.name}</option>)}
-        </select></label>
-        <label className="field"><span>From</span><input type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} /></label>
-        <label className="field"><span>To</span><input type="date" value={to} min={from} max={dateValue(new Date())} onChange={(e) => setTo(e.target.value)} /></label>
-        <label className="field projects-field"><span>Projects <small>optional</small></span><input value={projectsText} onChange={(e) => setProjectsText(e.target.value)} placeholder="e.g. SD, HW" /></label>
-        <button className="run-button" type="submit" disabled={!selectedOrg || loadingOrgs || loadingReport}>{loadingReport ? <><span className="spinner" /> Analysing</> : <>Run analysis <span>→</span></>}</button>
-      </form>
-      <div className="filter-hint">Uses tickets shared with this organisation. Results follow your Jira permissions.</div>
-    </section>
+  const periodDays = report ? Math.max(1, Math.ceil((Date.parse(report.endDate) - Date.parse(report.startDate)) / 86400000) + 1) : 0;
 
-    {error && <div className="error-banner"><span>!</span><div><b>We couldn’t complete that request.</b><p>{error}</p></div></div>}
-    {!report && !loadingReport && !error && <section className="empty-state"><div className="empty-icon">⌕</div><h2>Find the issues behind the numbers</h2><p>Choose a customer and date range to see ticket patterns, volume changes, and example requests.</p><button onClick={runAnalysis} disabled={!selectedOrg}>Analyse {selectedOrg?.name || 'customer tickets'} <span>→</span></button><div className="privacy-note"><span>▣</span> Analysis is performed on Jira ticket data your account can access.</div></section>}
-    {loadingReport && <section className="loading-card"><div className="loading-ring" /><h2>Reading customer tickets</h2><p>Finding repeated themes and comparing this period with the one before it.</p></section>}
+  return <div className="nq-page">
+    <AppHeader
+      product={PRODUCT}
+      subtitle="See recurring issues and what’s changing across a customer’s tickets."
+      version={version}
+      actions={report && <Button onClick={exportCsv}>Export CSV</Button>}
+    />
+
+    {!licensed && <Notice kind="warning" title="Customer Insights isn’t licensed on this site">
+      Analysis is unavailable until the app has an active Marketplace licence. Ask a Jira admin to check it in Manage apps.
+    </Notice>}
+
+    {licensed && <Card>
+      <form className="nq-filters ci-filters" onSubmit={runAnalysis}>
+        <Field label="Customer organisation" htmlFor="ci-org">
+          <select id="ci-org" className="nq-select" value={organizationId} onChange={(e) => setOrganizationId(e.target.value)} disabled={loadingOrgs || !orgs.length}>
+            {loadingOrgs && <option>Loading organisations…</option>}
+            {!loadingOrgs && !orgs.length && <option value="">No organisations found</option>}
+            {orgs.map((org) => <option value={org.id} key={org.id}>{org.name}</option>)}
+          </select>
+        </Field>
+        <Field label="From" htmlFor="ci-from">
+          <input id="ci-from" className="nq-input" type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} />
+        </Field>
+        <Field label="To" htmlFor="ci-to">
+          <input id="ci-to" className="nq-input" type="date" value={to} min={from} max={dateValue(new Date())} onChange={(e) => setTo(e.target.value)} />
+        </Field>
+        <Field label="Projects (optional)" htmlFor="ci-projects">
+          <input id="ci-projects" className="nq-input" value={projectsText} onChange={(e) => setProjectsText(e.target.value)} placeholder="e.g. SD, HW" />
+        </Field>
+        <Button appearance="primary" type="submit" disabled={!selectedOrg || loadingOrgs || loadingReport}>
+          {loadingReport ? 'Analysing…' : 'Run analysis'}
+        </Button>
+      </form>
+      <p className="nq-muted">Uses tickets shared with this organisation. Results follow your Jira permissions.</p>
+    </Card>}
+
+    {error && <Notice kind="error" title="We couldn’t complete that request.">{error}</Notice>}
+
+    {licensed && !loadingOrgs && !report && !loadingReport && !error && <Card>
+      <EmptyState
+        title="Find the issues behind the numbers"
+        actions={<Button appearance="primary" onClick={runAnalysis} disabled={!selectedOrg}>Analyse {selectedOrg?.name || 'customer tickets'}</Button>}
+      >
+        Choose a customer and date range to see ticket patterns, volume changes and example requests. Only Jira ticket data your account can access is analysed.
+      </EmptyState>
+    </Card>}
+
+    {loadingReport && <Card><Loading text="Reading customer tickets and comparing this period with the one before it…" /></Card>}
 
     {report && <>
-      <section className="summary-grid">
-        <article className="metric-card"><div className="metric-caption">{report.retrievalCapped ? 'CURRENT PERIOD SAMPLE' : 'TICKETS IN PERIOD'} <span className="metric-icon blue">▤</span></div><div className="metric-value">{report.currentCount.toLocaleString()}</div><div className="metric-foot">for {report.organization}</div></article>
-        <article className="metric-card"><div className="metric-caption">VS PREVIOUS PERIOD <span className="metric-icon violet">↗</span></div><div className="metric-value">{totalChange}</div><div className={`metric-foot ${report.change > 0 ? 'up' : report.change < 0 ? 'down' : ''}`}>{report.change > 0 ? '+' : ''}{report.change} tickets · previous {report.previousCount}</div></article>
-        <article className="metric-card"><div className="metric-caption">RECURRING PATTERNS <span className="metric-icon orange">⌘</span></div><div className="metric-value">{report.groups.length}</div><div className="metric-foot">with at least 2 related tickets</div></article>
-        <article className="metric-card"><div className="metric-caption">TICKETS ANALYSED <span className="metric-icon green">✓</span></div><div className="metric-value">{report.analyzedCount.toLocaleString()}</div><div className="metric-foot">rule-based text matching</div></article>
-      </section>
+      <div className="nq-kpis">
+        <Kpi icon="▤" label={report.retrievalCapped ? 'Current period sample' : 'Tickets in period'} value={report.currentCount.toLocaleString()} hint={`for ${report.organization}`} />
+        <Kpi icon="↗" kind={report.change > 0 ? 'warning' : report.change < 0 ? 'success' : 'info'} label="Vs previous period" value={totalChange} hint={`${signed(report.change)} tickets · previous ${report.previousCount}`} />
+        <Kpi icon="⌘" kind="warning" label="Recurring patterns" value={report.groups.length} hint="with at least 2 related tickets" />
+        <Kpi icon="✓" kind="success" label="Tickets analysed" value={report.analyzedCount.toLocaleString()} hint="rule-based text matching" />
+      </div>
 
-      <section className="content-grid">
-        <article className="panel trend-panel"><div className="panel-heading"><div><div className="panel-kicker">VOLUME OVER TIME</div><h2>Ticket activity</h2></div><span className="period-chip">{report.startDate} — {report.endDate}</span></div>
-          {report.timeSeries.length ? <div className="chart-area"><div className="y-labels"><span>{graphMax}</span><span>{Math.ceil(graphMax / 2)}</span><span>0</span></div><div className="bars" role="img" aria-label="Ticket volume over time">
-            {report.timeSeries.map((point) => <div className="bar-slot" key={point.date} title={`${point.date}: ${point.count} tickets`}><div className="bar" style={{ height: `${Math.max(5, (point.count / graphMax) * 100)}%` }} /><span>{point.date.slice(5)}</span></div>)}
-          </div></div> : <div className="chart-empty">No tickets were created in this period.</div>}
-        </article>
-        <article className="panel insight-panel"><div className="panel-heading"><div><div className="panel-kicker">QUICK READ</div><h2>What stands out</h2></div><span className="sparkle">✦</span></div>
-          {report.groups.length ? <div className="insight-list">{report.groups.slice(0, 3).map((g, i) => <div className="insight-row" key={g.id}><span className={`insight-rank rank-${i}`}>0{i + 1}</span><div><b>{g.theme}</b><p>{g.count} related tickets{g.previousCount ? `, ${g.change >= 0 ? 'up' : 'down'} ${Math.abs(g.change)} from the previous period` : ', newly recurring this period'}</p></div><span className="insight-count">{g.count}</span></div>)}</div> : <div className="insight-empty">No repeated patterns found in these tickets yet.</div>}
-          <div className="insight-disclaimer">Patterns are based on matching ticket text. Review the examples before drawing conclusions.</div>
-        </article>
-      </section>
+      <div className="nq-grid ci-split">
+        <Card title="Ticket activity" description="Volume over time" actions={<span className="nq-pill nq-pill--neutral">{report.startDate} – {report.endDate}</span>}>
+          {report.timeSeries.length
+            ? <div className="ci-chart">
+              <div className="ci-chart__axis"><span>{graphMax}</span><span>{Math.ceil(graphMax / 2)}</span><span>0</span></div>
+              <div className="ci-chart__bars" role="img" aria-label="Ticket volume over time">
+                {report.timeSeries.map((point, i) => <div className="ci-chart__slot" key={point.date} title={`${point.date}: ${point.count} tickets`}>
+                  <div className="ci-chart__bar" style={{ height: `${Math.max(5, (point.count / graphMax) * 100)}%` }} />
+                  <span>{i % labelEvery === 0 ? point.date.slice(5) : ''}</span>
+                </div>)}
+              </div>
+            </div>
+            : <EmptyState compact title="No tickets were created in this period." />}
+        </Card>
 
-      <section className="panel patterns-panel"><div className="panel-heading patterns-heading"><div><div className="panel-kicker">REPEATED CUSTOMER ISSUES</div><h2>Issue patterns <span className="count-pill">{report.groups.length}</span></h2></div><span className="evidence-tag">TICKET EVIDENCE INCLUDED</span></div>
-        {report.groups.length ? <div className="pattern-list">{report.groups.map((group) => <details className="pattern" key={group.id}><summary><span className="pattern-title">{group.theme}</span><span className="pattern-sample">{group.sampleSummary}</span><span className="pattern-meter"><i style={{ width: `${Math.max(8, (group.count / maxGroup) * 100)}%` }} /></span><span className="pattern-number">{group.count}</span><span className={`trend-badge ${group.change > 0 ? 'badge-up' : group.change < 0 ? 'badge-down' : ''}`}>{group.previousCount ? `${group.change > 0 ? '↑' : group.change < 0 ? '↓' : '→'} ${Math.abs(group.change)}` : 'NEW'}</span><span className="chevron">⌄</span></summary><div className="ticket-evidence">{group.tickets.map((ticket) => <a key={ticket.key} href={ticket.url} target="_blank" rel="noreferrer"><span className="ticket-key">{ticket.key}</span><span className="ticket-summary">{ticket.summary}</span><span className="ticket-status">{ticket.status}</span><span className="ticket-date">{new Date(ticket.created).toLocaleDateString()}</span><span className="external">↗</span></a>)}</div></details>)}</div> : <div className="no-patterns"><span>✓</span><div><b>No repeated issue patterns detected</b><p>There are no groups of similar tickets with more than one request in this period.</p></div></div>}
-        {(report.capped || report.retrievalCapped) && <div className="cap-note">{report.retrievalCapped ? `The search reached the ${report.totalFetched.toLocaleString()}-ticket retrieval limit, so counts are based on the fetched sample. ` : ''}{report.capped ? 'Pattern matching examines up to 900 tickets per period.' : ''}</div>}
-        <div className="method-note"><span>ⓘ</span> Similarity groups use ticket summaries and descriptions. They are clues for review, not confirmed root causes.</div>
-      </section>
-      <footer className="report-footer"><span>Analysis period: {report.startDate} to {report.endDate} · Compared with the preceding {Math.max(1, Math.ceil((Date.parse(report.endDate) - Date.parse(report.startDate)) / 86400000) + 1)} days</span><button onClick={() => setQueryOpen(!queryOpen)}>{queryOpen ? 'Hide' : 'Show'} search details <span>{queryOpen ? '⌃' : '⌄'}</span></button></footer>
-      {queryOpen && <div className="query-detail"><b>Data source:</b> Jira issues with <code>organizations = "{report.organization}"</code>, created between {report.startDate} and {report.endDate}. A preceding equal-length period is used for comparison. Only tickets visible to your Jira account are included.</div>}
+        <Card title="What stands out" description="Quick read" footer={<span className="nq-muted">Patterns are based on matching ticket text. Review the examples before drawing conclusions.</span>}>
+          {report.groups.length
+            ? <ol className="ci-insights">{report.groups.slice(0, 3).map((g) => <li key={g.id}>
+              <div>
+                <strong>{g.theme}</strong>
+                <p className="nq-muted">{g.count} related tickets{g.previousCount ? `, ${g.change >= 0 ? 'up' : 'down'} ${Math.abs(g.change)} from the previous period` : ', newly recurring this period'}</p>
+              </div>
+              <span className="ci-insights__count">{g.count}</span>
+            </li>)}</ol>
+            : <EmptyState compact title="No repeated patterns found in these tickets yet." />}
+        </Card>
+      </div>
+
+      <Card
+        title={<>Issue patterns <span className="nq-pill nq-pill--neutral">{report.groups.length}</span></>}
+        description="Repeated customer issues, with ticket evidence"
+        footer={<span className="nq-muted">Similarity groups use ticket summaries and descriptions. They are clues for review, not confirmed root causes.</span>}
+      >
+        {(report.capped || report.retrievalCapped) && <Notice kind="warning">
+          {report.retrievalCapped ? `The search reached the ${report.totalFetched.toLocaleString()}-ticket retrieval limit, so counts are based on the fetched sample. ` : ''}
+          {report.capped ? 'Pattern matching examines up to 900 tickets per period.' : ''}
+        </Notice>}
+        {report.groups.length
+          ? <div className="ci-patterns">{report.groups.map((group) => <details className="ci-pattern" key={group.id}>
+            <summary>
+              <strong className="ci-pattern__title">{group.theme}</strong>
+              <span className="ci-pattern__sample nq-muted">{group.sampleSummary}</span>
+              <span className="ci-meter"><i style={{ width: `${Math.max(8, (group.count / maxGroup) * 100)}%` }} /></span>
+              <span className="ci-pattern__count">{group.count}</span>
+              <TrendLozenge group={group} />
+              <span className="ci-pattern__chevron" aria-hidden="true">›</span>
+            </summary>
+            <div className="nq-table-wrap">
+              <table className="nq-table">
+                <thead><tr><th>Key</th><th>Summary</th><th>Status</th><th>Created</th></tr></thead>
+                <tbody>{group.tickets.map((ticket) => <tr key={ticket.key}>
+                  <td><a className="nq-table__key" href={ticket.url} target="_blank" rel="noreferrer">{ticket.key}</a></td>
+                  <td>{ticket.summary}</td>
+                  <td><Lozenge>{ticket.status}</Lozenge></td>
+                  <td>{new Date(ticket.created).toLocaleDateString()}</td>
+                </tr>)}</tbody>
+              </table>
+            </div>
+          </details>)}</div>
+          : <EmptyState compact title="No repeated issue patterns detected">There are no groups of similar tickets with more than one request in this period.</EmptyState>}
+      </Card>
+
+      <div className="nq-spread ci-method">
+        <span className="nq-muted">Analysis period: {report.startDate} to {report.endDate} · compared with the preceding {periodDays} days</span>
+        <Button appearance="link" small onClick={() => setQueryOpen(!queryOpen)}>{queryOpen ? 'Hide' : 'Show'} search details</Button>
+      </div>
+      {queryOpen && <Notice title="Data source">
+        Jira issues with <code>organizations = "{report.organization}"</code>, created between {report.startDate} and {report.endDate}. A preceding equal-length period is used for comparison. Only tickets visible to your Jira account are included.
+      </Notice>}
     </>}
-    <footer className="app-footer"><span>Nuvriqo Customer Insights <b>EARLY ACCESS</b></span><span>Made for service teams</span></footer>
-  </main>;
+
+    <Footer product={PRODUCT} version={version} />
+  </div>;
 }
 
 createRoot(document.getElementById('root')).render(<App />);

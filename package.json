@@ -7,13 +7,15 @@
   "scripts": {
     "build": "npm run build:ui",
     "build:ui": "vite build --config static/app/vite.config.js",
-    "test": "node --test",
-    "lint": "node --check src/index.js && node --check src/analysis.js"
+    "test": "node --test && npm run check:ui",
+    "lint": "node --check src/index.js && node --check src/analysis.js",
+    "check:ui": "nuvriqo-ui-check static/app/src"
   },
   "dependencies": {
     "@forge/api": "^8.2.0",
-    "@forge/resolver": "^2.0.0",
     "@forge/bridge": "^7.1.0",
+    "@forge/resolver": "^2.0.0",
+    "@nuvriqo/ui": "github:rdersley/nuvriqo-ui#v0.3.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
