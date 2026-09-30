@@ -21,6 +21,19 @@ test('AI input is bounded: 12 patterns, 8 examples, clipped text', () => {
   assert.equal(aiInput({ ...report, sampled: true }).patternCountsAreEstimates, true);
 });
 
+test('AI input includes field breakdowns and where each pattern happens', () => {
+  const withFields = {
+    ...report,
+    breakdownFields: [{ id: 'base', label: 'Base' }],
+    breakdowns: [{ id: 'base', label: 'Base', values: [{ value: 'STN', count: 40, previousCount: 10 }, { value: 'DUB', count: 5, previousCount: 6 }] }],
+    groups: [{ ...report.groups[0], sampleCount: 4, dimCounts: { base: { STN: 3, DUB: 1 } } }],
+  };
+  const input = aiInput(withFields);
+  assert.deepEqual(input.breakdowns, [{ field: 'Base', top: [{ value: 'STN', tickets: 40, previousPeriodTickets: 10 }, { value: 'DUB', tickets: 5, previousPeriodTickets: 6 }] }]);
+  assert.deepEqual(input.patterns[0].where, { Base: ['STN 75%', 'DUB 25%'] });
+  assert.deepEqual(aiInput(report).patterns[0].where, {});
+});
+
 test('model output is validated: bad indexes and duplicates dropped, text bounded', () => {
   const parsed = parseInsights({
     overview: 'o'.repeat(5000),

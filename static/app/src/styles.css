@@ -42,11 +42,26 @@
 
 .ci-method { flex-wrap: wrap; }
 
+/* Field breakdowns */
+.ci-breakdowns { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+.ci-values { list-style: none; margin: 0; padding: 0; }
+.ci-values li { display: grid; grid-template-columns: minmax(0, 1fr) minmax(60px, 1fr) 56px 64px; gap: var(--nq-space-100); align-items: center; padding: var(--nq-space-075, 6px) 0; border-bottom: 1px solid var(--nq-border); }
+.ci-values li:last-child { border-bottom: 0; }
+.ci-values__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--nq-text); }
+.ci-values__count { text-align: right; font-weight: 700; }
+.ci-where { display: block; margin-top: 2px; font-style: normal; color: var(--nq-text-subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ci-pattern__sample { white-space: normal; }
+
 /* Full analysis */
 .ci-full { flex-wrap: wrap; }
 .ci-progress { display: flex; flex-direction: column; gap: var(--nq-space-100); padding: var(--nq-space-150); border: 1px solid var(--nq-border); border-radius: var(--nq-radius-md); background: var(--nq-surface-sunken); }
 .ci-progress__bar { height: 8px; }
 .ci-progress__bar i { transition: width 0.3s ease; }
+
+/* Live portal reports */
+.ci-live { flex-wrap: wrap; align-items: flex-start; }
+.ci-live-edit { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--nq-space-150); }
+.ci-live-edit .nq-field { margin: 0; }
 
 /* Portal report editor */
 .ci-draft { display: flex; flex-direction: column; gap: var(--nq-space-100); }

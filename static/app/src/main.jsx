@@ -7,13 +7,14 @@ import { AppHeader, Button, Card, EmptyState, Field, Footer, Kpi, Loading, Lozen
 import { version } from '../../../package.json';
 import { localIso, matchPreset, presetRange, PRESETS } from '../../../src/dates.js';
 import { analyseEveryTicket, Cancelled, FULL_LIMIT } from './fullAnalysis.js';
-import { applyMerges } from '../../../src/analysis.js';
+import { applyMerges, topShares } from '../../../src/analysis.js';
 import './styles.css';
 
 enableTheme(view);
 
 const PRODUCT = 'Customer Insights';
 const DEFAULT_RANGE = presetRange('last-30');
+const presetLabel = (key) => PRESETS.find((p) => p.key === key)?.label || key;
 const signed = (n) => `${n > 0 ? '+' : ''}${n}`;
 
 // More tickets than last period is the thing to look at, so rises are flagged.
@@ -122,7 +123,16 @@ function App() {
       })),
       overview: ai?.overview || '',
       actions: (ai?.actions || []).join('\n'),
+      live: publication?.published?.live || { schedule: 'weekly', preset: 'last-30' },
     });
+  }
+
+  async function refreshLive() {
+    setPublishError('');
+    try {
+      const liveState = await invoke('refreshLiveReport', { orgId: reportOrgId });
+      setPublication((p) => ({ ...p, liveState }));
+    } catch (e) { setPublishError(e.message || 'The refresh could not be queued.'); }
   }
 
   const editPattern = (index, change) => setDraft((d) => ({ ...d, patterns: d.patterns.map((p, i) => (i === index ? { ...p, ...change } : p)) }));
@@ -140,8 +150,10 @@ function App() {
           overview: draft.overview,
           actions: draft.actions.split('\n'),
         },
+        live: draft.live,
+        projects: lastQuery?.projects || [],
       });
-      setPublication((p) => ({ ...p, published })); setDraft(null);
+      setPublication((p) => ({ ...p, published, liveState: published.live ? { ...p?.liveState, queuedAt: new Date().toISOString() } : {} })); setDraft(null);
     } catch (e) { setPublishError(e.message || 'Publishing failed.'); }
     finally { setPublishing(false); }
   }
@@ -184,6 +196,14 @@ function App() {
   // AI names apply to the first merged patterns (aiInput sends 12); the index is the merged order.
   const aiPattern = (index) => ai?.patterns.find((p) => p.index === index);
   const patternName = (group, index) => aiPattern(index)?.title || group.theme;
+  // "Base: STN 38%, DUB 20% · Device type: vPOS 90%"
+  const whereOf = (group) => (report?.breakdownFields || [])
+    .map((f) => {
+      const shares = topShares(group, f.id, 2);
+      return shares.length ? `${f.label}: ${shares.map((s) => `${s.value} ${s.share}%`).join(', ')}` : '';
+    })
+    .filter(Boolean)
+    .join(' · ');
 
   function exportCsv() {
     if (!report) return;
@@ -313,6 +333,23 @@ function App() {
         </Card>
       </div>
 
+      {report.breakdowns?.length > 0
+        ? <div className="nq-grid ci-breakdowns">{report.breakdowns.map((b) => {
+          const top = Math.max(1, ...b.values.map((v) => v.count));
+          return <Card key={b.id} title={`By ${b.label}`} description={b.estimated ? 'Estimated from the sample' : 'All tickets in the period'}>
+            {b.values.length
+              ? <ol className="ci-values">{b.values.map((v) => <li key={v.value}>
+                <span className="ci-values__name" title={v.value}>{v.value}</span>
+                <span className="ci-meter"><i style={{ width: `${Math.max(4, (v.count / top) * 100)}%` }} /></span>
+                <span className="ci-values__count">{b.estimated ? '≈' : ''}{v.count.toLocaleString()}</span>
+                <TrendLozenge group={v} />
+              </li>)}</ol>
+              : <EmptyState compact title={`No ${b.label} values on these tickets.`} />}
+            {b.withoutValue > 0 && <p className="nq-muted">{b.estimated ? '≈' : ''}{b.withoutValue.toLocaleString()} tickets have no {b.label}.</p>}
+          </Card>;
+        })}</div>
+        : <p className="nq-muted">Tip: a Jira admin can add breakdowns by base, device type or any other field in <strong>Jira settings → Apps → Customer Insights</strong>.</p>}
+
       <Card
         title={<>Issue patterns <span className="nq-pill nq-pill--neutral">{groups.length}</span></>}
         description="Repeated customer issues, with ticket evidence"
@@ -350,7 +387,10 @@ function App() {
                   {aiPattern(index)?.coherent === false && <> · <Lozenge kind="warning">Mixed</Lozenge></>}
                 </small>}
               </span>
-              <span className="ci-pattern__sample nq-muted">{aiPattern(index)?.summary || group.sampleSummary}</span>
+              <span className="ci-pattern__sample nq-muted">
+                {aiPattern(index)?.summary || group.sampleSummary}
+                {whereOf(group) && <em className="ci-where">{whereOf(group)}</em>}
+              </span>
               <span className="ci-meter"><i style={{ width: `${Math.max(8, (group.count / maxGroup) * 100)}%` }} /></span>
               <span className="ci-pattern__count" title={group.estimated ? `${group.sampleCount} in the sample` : undefined}>{group.estimated ? '≈' : ''}{group.count}</span>
               <TrendLozenge group={group} />
@@ -387,6 +427,21 @@ function App() {
             : 'Nothing is published for this organisation yet.'}
           {!publication.canPublish && ' Only Jira admins and project admins can publish.'}
         </p>}
+        {publication?.published?.live && !draft && <div className="nq-stack">
+          <div className="nq-spread ci-live">
+            <span>
+              <Lozenge kind="success">Live</Lozenge>{' '}
+              {presetLabel(publication.published.live.preset)}, refreshed {publication.published.live.schedule}.
+              {' '}Numbers last refreshed {new Date(publication.published.refreshedAt).toLocaleString()}; summary written {new Date(publication.published.summaryWrittenAt).toLocaleDateString()}.
+              {publication.liveState?.queuedAt && ' A refresh is queued.'}
+            </span>
+            {publication.canPublish && <Button small onClick={refreshLive} disabled={Boolean(publication.liveState?.queuedAt)}>Refresh now</Button>}
+          </div>
+          {publication.liveState?.lastError && <Notice kind="warning" title="The last refresh failed.">{publication.liveState.lastError}</Notice>}
+          {publication.published.unreviewed?.length > 0 && <Notice kind="discovery" title="New issues since the last review">
+            {publication.published.unreviewed.map((u) => `${u.title} (${u.count})`).join(' · ')}. Customers see these under “Other requests” until you replace the portal report with them named.
+          </Notice>}
+        </div>}
         {draft && <div className="nq-stack">
           <Notice>Customers see these names, descriptions and counts. They don’t see ticket keys, titles or who raised them. {ai ? '' : 'Run the AI summary first for suggested names and a summary.'}</Notice>
           <div className="ci-draft">
@@ -403,6 +458,20 @@ function App() {
           <Field label="Next steps (one per line)" htmlFor="ci-draft-actions" help="These are shown to the customer. Remove anything internal.">
             <textarea id="ci-draft-actions" className="nq-textarea" rows={3} value={draft.actions} onChange={(e) => setDraft((d) => ({ ...d, actions: e.target.value }))} />
           </Field>
+          <div className="ci-live-edit">
+            <Field label="Keep up to date" htmlFor="ci-draft-schedule" help="Refreshes the numbers for the issues above. Your summary and next steps stay as written, with their date.">
+              <select id="ci-draft-schedule" className="nq-select" value={draft.live.schedule} onChange={(e) => setDraft((d) => ({ ...d, live: { ...d.live, schedule: e.target.value } }))}>
+                <option value="off">Off (publish as a one-off)</option>
+                <option value="daily">Daily</option>
+                <option value="weekly">Weekly</option>
+              </select>
+            </Field>
+            {draft.live.schedule !== 'off' && <Field label="Period shown" htmlFor="ci-draft-preset" help="Rolls forward on every refresh. Customers can also refresh once an hour.">
+              <select id="ci-draft-preset" className="nq-select" value={draft.live.preset} onChange={(e) => setDraft((d) => ({ ...d, live: { ...d.live, preset: e.target.value } }))}>
+                {PRESETS.map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
+              </select>
+            </Field>}
+          </div>
           <div className="nq-inline">
             <Button appearance="primary" onClick={publish} disabled={publishing || !draft.patterns.some((p) => p.include && p.title.trim())}>{publishing ? 'Publishing…' : 'Publish to portal'}</Button>
             <Button appearance="subtle" onClick={() => setDraft(null)} disabled={publishing}>Cancel</Button>
