@@ -371,7 +371,7 @@ function App() {
           : <EmptyState compact title="No repeated issue patterns detected">There are no groups of similar tickets with more than one request in this period.</EmptyState>}
       </Card>
 
-      <Card
+      {publication?.portalEnabled !== false && <Card
         title="Customer portal"
         description={`What ${report.organization}'s portal users see under “Service report” in their user menu.`}
         actions={publication?.canPublish && !draft && <>
@@ -408,7 +408,7 @@ function App() {
             <Button appearance="subtle" onClick={() => setDraft(null)} disabled={publishing}>Cancel</Button>
           </div>
         </div>}
-      </Card>
+      </Card>}
 
       <div className="nq-spread ci-method">
         <span className="nq-muted">Analysis period: {report.startDate} to {report.endDate} · compared with the preceding {periodDays} days</span>
