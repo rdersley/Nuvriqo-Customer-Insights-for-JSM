@@ -248,15 +248,21 @@ async function visibleOrganisation(orgId) {
   return { id: String(data.id), name: data.name };
 }
 
+// `forge variables set PORTAL_REPORTS off` hides portal publishing, for
+// releases that leave the portal module out of the manifest.
+const portalEnabled = () => String(process.env.PORTAL_REPORTS ?? '').trim().toLowerCase() !== 'off';
+
 define('getPublication', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  if (!portalEnabled()) return { portalEnabled: false, canPublish: false, published: null };
   const organization = await visibleOrganisation(payload?.orgId);
   const [allowed, published] = await Promise.all([canPublish(), loadReport(organization.id)]);
-  return { canPublish: allowed, published };
+  return { portalEnabled: true, canPublish: allowed, published };
 });
 
 define('publishReport', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  if (!portalEnabled()) throw new Error('Portal reports are switched off on this site.');
   if (!(await canPublish())) throw new Error('Only Jira admins and project admins can publish to the portal.');
   const organization = await visibleOrganisation(payload?.snapshot?.organization?.id);
   const snapshot = snapshotFrom({ ...payload.snapshot, organization }, { publishedBy: context?.accountId });
