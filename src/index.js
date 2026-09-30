@@ -1,13 +1,61 @@
 import ResolverModule from '@forge/resolver';
 import { asUser, route } from '@forge/api';
-import { buildReport } from './analysis.js';
+import { buildReport, chartBuckets } from './analysis.js';
 import { licenseAllows, UNLICENSED_MESSAGE } from './license.js';
 
 // This package is "type": "module"; Forge's bundler then hands CommonJS packages
 // over as their exports object, so the class sits on `.default`.
 const Resolver = ResolverModule.default ?? ResolverModule;
 const resolver = new Resolver();
-const MAX_ISSUES = 1800;
+const PERIOD_SAMPLE = 900; // most tickets analysed per period (groupIssues' cap)
+const SAMPLE_SLICES = 9;
+const CONCURRENCY = 6;
+const FETCH_BUDGET_MS = 15000;
+const FIELDS = ['summary', 'description', 'created', 'status'];
+const DAY = 86400000;
+
+async function jiraPost(path, body, label) {
+  const response = await asUser().requestJira(path, {
+    method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  return readJson(response, label);
+}
+
+/** Jira's fast count (not a full search). Permissions apply as for search. */
+async function countIssues(jql) {
+  const result = await jiraPost(route`/rest/api/3/search/approximate-count`, { jql }, 'Ticket count');
+  return Number(result.count) || 0;
+}
+
+async function searchPage(jql, maxResults, nextPageToken) {
+  const body = { jql: `${jql} ORDER BY created DESC`, maxResults, fields: FIELDS };
+  if (nextPageToken) body.nextPageToken = nextPageToken;
+  const result = await jiraPost(route`/rest/api/3/search/jql`, body, 'Ticket search');
+  return { issues: result.issues || [], nextPageToken: result.nextPageToken };
+}
+
+/** Runs async tasks with at most `limit` in flight, keeping result order. */
+async function pool(tasks, limit) {
+  const results = new Array(tasks.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < tasks.length) {
+      const index = next++;
+      results[index] = await tasks[index]();
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(limit, tasks.length) }, worker));
+  return results;
+}
+
+/** Splits [from, toExclusive) into up to n whole-day slices. */
+function dateSlices(from, toExclusive, n) {
+  const start = Date.parse(`${from}T00:00:00Z`);
+  const days = Math.max(1, Math.round((Date.parse(`${toExclusive}T00:00:00Z`) - start) / DAY));
+  const count = Math.min(n, days);
+  const iso = (ms) => new Date(ms).toISOString().slice(0, 10);
+  return Array.from({ length: count }, (_, i) => [iso(start + Math.floor((i * days) / count) * DAY), iso(start + Math.floor(((i + 1) * days) / count) * DAY)]);
+}
 
 async function readJson(response, label) {
   const body = await response.text();
@@ -51,22 +99,55 @@ resolver.define('analyze', async ({ payload, context }) => {
   const fullSpan = Math.max(1, span + 1);
   const previousStart = new Date(Date.parse(`${startDate}T00:00:00Z`) - fullSpan * 86400000).toISOString().slice(0, 10);
   const endExclusive = new Date(Date.parse(`${endDate}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
-  const jql = `organizations = "${escapeJql(organization.name)}" AND created >= "${previousStart}" AND created < "${endExclusive}"${projectClause} ORDER BY created DESC`;
-  let nextPageToken;
-  const issues = [];
-  for (let page = 0; page < 18; page += 1) {
-    const body = { jql, maxResults: 100, fields: ['summary', 'description', 'created', 'updated', 'status', 'issuetype', 'priority', 'project', 'labels', 'components'] };
-    if (nextPageToken) body.nextPageToken = nextPageToken;
-    const response = await asUser().requestJira(route`/rest/api/3/search/jql`, {
-      method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    });
-    const result = await readJson(response, 'Ticket search');
-    issues.push(...(result.issues || []));
-    nextPageToken = result.nextPageToken;
-    if (!nextPageToken || issues.length >= MAX_ISSUES) break;
+  const between = (from, toExclusive) => `organizations = "${escapeJql(organization.name)}" AND created >= "${from}" AND created < "${toExclusive}"${projectClause}`;
+  // Resolvers are killed at 25s; stop starting new fetches after the budget.
+  const startedAt = Date.now();
+  const deadline = startedAt + FETCH_BUDGET_MS;
+  let cutShort = false;
+
+  // Exact totals first, so headline numbers and the comparison never depend on the sample.
+  const [currentTotal, previousTotal] = await Promise.all([
+    countIssues(between(startDate, endExclusive)),
+    countIssues(between(previousStart, startDate)),
+  ]);
+
+  // Small periods are fetched in full. Large ones are sampled evenly: the newest
+  // tickets of each of SAMPLE_SLICES slices, so June counts as much as August.
+  async function fetchPeriod(from, toExclusive, total) {
+    if (total <= PERIOD_SAMPLE) {
+      const issues = [];
+      let token;
+      do {
+        if (Date.now() > deadline) { cutShort = true; break; }
+        const page = await searchPage(between(from, toExclusive), 100, token);
+        issues.push(...page.issues);
+        token = page.nextPageToken;
+      } while (token && issues.length < PERIOD_SAMPLE);
+      return issues;
+    }
+    const perSlice = Math.min(100, Math.ceil(PERIOD_SAMPLE / SAMPLE_SLICES));
+    const pages = await pool(dateSlices(from, toExclusive, SAMPLE_SLICES).map(([a, b]) => () => {
+      if (Date.now() > deadline) { cutShort = true; return { issues: [] }; }
+      return searchPage(between(a, b), perSlice);
+    }), CONCURRENCY);
+    return pages.flatMap((page) => page.issues);
   }
-  const report = buildReport(issues, startDate, endDate);
-  return { ...report, organization: organization.name, startDate, endDate, projectCount: cleanProjects.length || null, totalFetched: issues.length, retrievalCapped: Boolean(nextPageToken) };
+  const [currentIssues, previousIssues] = await Promise.all([
+    fetchPeriod(startDate, endExclusive, currentTotal),
+    fetchPeriod(previousStart, startDate, previousTotal),
+  ]);
+
+  // A sampled period can't draw its own chart, so count each bucket instead.
+  let timeSeries;
+  if (currentIssues.length < currentTotal) {
+    const buckets = chartBuckets(startDate, endDate);
+    const counts = await pool(buckets.map((b) => () => countIssues(between(b.from, b.toExclusive))), CONCURRENCY);
+    timeSeries = buckets.map((b, i) => ({ date: b.date, count: counts[i] }));
+  }
+  const issues = [...currentIssues, ...previousIssues];
+  const report = buildReport(issues, startDate, endDate, { current: currentTotal, previous: previousTotal, timeSeries });
+  console.log(`analyze: ${currentTotal}+${previousTotal} tickets, ${issues.length} fetched in ${Date.now() - startedAt}ms`);
+  return { ...report, organization: organization.name, startDate, endDate, projectCount: cleanProjects.length || null, totalFetched: issues.length, cutShort };
 });
 
 export const handler = resolver.getDefinitions();
