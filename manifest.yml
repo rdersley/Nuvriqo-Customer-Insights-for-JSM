@@ -5,6 +5,15 @@ modules:
       resolver:
         function: resolver
       title: Customer Insights
+  # Settings (Jira settings → Apps, and "Configure" in Manage apps). Jira
+  # admins only; checked again on the server.
+  jira:adminPage:
+    - key: customer-insights-settings
+      title: Customer Insights
+      resource: settings
+      resolver:
+        function: resolver
+      useAsConfig: true
   # Published reports for portal customers. Own function (src/portal.js) so
   # customers can't reach the agent resolvers.
   jiraServiceManagement:portalUserMenuAction:
@@ -31,6 +40,8 @@ resources:
     path: static/app/build
   - key: portal
     path: static/portal/build
+  - key: settings
+    path: static/settings/build
 app:
   runtime:
     name: nodejs22.x

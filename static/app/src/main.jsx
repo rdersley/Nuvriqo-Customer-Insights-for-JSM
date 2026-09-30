@@ -7,7 +7,7 @@ import { AppHeader, Button, Card, EmptyState, Field, Footer, Kpi, Loading, Lozen
 import { version } from '../../../package.json';
 import { localIso, matchPreset, presetRange, PRESETS } from '../../../src/dates.js';
 import { analyseEveryTicket, Cancelled, FULL_LIMIT } from './fullAnalysis.js';
-import { applyMerges } from '../../../src/analysis.js';
+import { applyMerges, topShares } from '../../../src/analysis.js';
 import './styles.css';
 
 enableTheme(view);
@@ -184,6 +184,14 @@ function App() {
   // AI names apply to the first merged patterns (aiInput sends 12); the index is the merged order.
   const aiPattern = (index) => ai?.patterns.find((p) => p.index === index);
   const patternName = (group, index) => aiPattern(index)?.title || group.theme;
+  // "Base: STN 38%, DUB 20% · Device type: vPOS 90%"
+  const whereOf = (group) => (report?.breakdownFields || [])
+    .map((f) => {
+      const shares = topShares(group, f.id, 2);
+      return shares.length ? `${f.label}: ${shares.map((s) => `${s.value} ${s.share}%`).join(', ')}` : '';
+    })
+    .filter(Boolean)
+    .join(' · ');
 
   function exportCsv() {
     if (!report) return;
@@ -313,6 +321,23 @@ function App() {
         </Card>
       </div>
 
+      {report.breakdowns?.length > 0
+        ? <div className="nq-grid ci-breakdowns">{report.breakdowns.map((b) => {
+          const top = Math.max(1, ...b.values.map((v) => v.count));
+          return <Card key={b.id} title={`By ${b.label}`} description={b.estimated ? 'Estimated from the sample' : 'All tickets in the period'}>
+            {b.values.length
+              ? <ol className="ci-values">{b.values.map((v) => <li key={v.value}>
+                <span className="ci-values__name" title={v.value}>{v.value}</span>
+                <span className="ci-meter"><i style={{ width: `${Math.max(4, (v.count / top) * 100)}%` }} /></span>
+                <span className="ci-values__count">{b.estimated ? '≈' : ''}{v.count.toLocaleString()}</span>
+                <TrendLozenge group={v} />
+              </li>)}</ol>
+              : <EmptyState compact title={`No ${b.label} values on these tickets.`} />}
+            {b.withoutValue > 0 && <p className="nq-muted">{b.estimated ? '≈' : ''}{b.withoutValue.toLocaleString()} tickets have no {b.label}.</p>}
+          </Card>;
+        })}</div>
+        : <p className="nq-muted">Tip: a Jira admin can add breakdowns by base, device type or any other field in <strong>Jira settings → Apps → Customer Insights</strong>.</p>}
+
       <Card
         title={<>Issue patterns <span className="nq-pill nq-pill--neutral">{groups.length}</span></>}
         description="Repeated customer issues, with ticket evidence"
@@ -350,7 +375,10 @@ function App() {
                   {aiPattern(index)?.coherent === false && <> · <Lozenge kind="warning">Mixed</Lozenge></>}
                 </small>}
               </span>
-              <span className="ci-pattern__sample nq-muted">{aiPattern(index)?.summary || group.sampleSummary}</span>
+              <span className="ci-pattern__sample nq-muted">
+                {aiPattern(index)?.summary || group.sampleSummary}
+                {whereOf(group) && <em className="ci-where">{whereOf(group)}</em>}
+              </span>
               <span className="ci-meter"><i style={{ width: `${Math.max(8, (group.count / maxGroup) * 100)}%` }} /></span>
               <span className="ci-pattern__count" title={group.estimated ? `${group.sampleCount} in the sample` : undefined}>{group.estimated ? '≈' : ''}{group.count}</span>
               <TrendLozenge group={group} />

@@ -145,3 +145,4 @@ vite.config.ts.timestamp-*
 # Custom UI build output (manifest resource path)
 static/app/build/
 static/portal/build/
+static/settings/build/

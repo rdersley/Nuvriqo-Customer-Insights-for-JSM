@@ -24,7 +24,7 @@ async function pool(tasks, limit) {
 }
 
 function groupOnPage(args) {
-  return buildReport(args.issues, args.startDate, args.endDate, null, { limit: Infinity });
+  return buildReport(args.issues, args.startDate, args.endDate, null, { limit: Infinity, breakdowns: args.breakdowns || [] });
 }
 
 /** Groups in a Web Worker so the page stays responsive; falls back to the page. */
@@ -80,7 +80,7 @@ export async function analyseEveryTicket({ query, sampled, onProgress, isCancell
   await pool(tasks, CONCURRENCY);
   if (isCancelled()) throw new Cancelled('Cancelled');
   onProgress(issues.length, total, 'grouping');
-  const report = await group({ issues, startDate: sampled.startDate, endDate: sampled.endDate });
+  const report = await group({ issues, startDate: sampled.startDate, endDate: sampled.endDate, breakdowns: sampled.breakdownFields || [] });
   return {
     ...report,
     organization: sampled.organization,
@@ -90,6 +90,7 @@ export async function analyseEveryTicket({ query, sampled, onProgress, isCancell
     endExclusive: sampled.endExclusive,
     projectCount: sampled.projectCount,
     totalFetched: issues.length,
+    breakdownFields: sampled.breakdownFields,
     full: true,
   };
 }

@@ -4,7 +4,8 @@ import { buildReport, chartBuckets, textOf } from './analysis.js';
 import { licenseAllows, UNLICENSED_MESSAGE } from './license.js';
 import { suggestMerges, summarise } from './ai.js';
 import { snapshotFrom } from './publish.js';
-import { deleteReport, loadReport, saveReport } from './storage.js';
+import { deleteReport, loadReport, loadSettings, saveReport, saveSettings } from './storage.js';
+import { dimensionsOf, sanitizeSettings, selectableFields } from './settings.js';
 
 // This package is "type": "module"; Forge's bundler then hands CommonJS packages
 // over as their exports object, so the class sits on `.default`.
@@ -40,11 +41,13 @@ async function countIssues(jql) {
   return Number(result.count) || 0;
 }
 
-async function searchPage(jql, maxResults, nextPageToken) {
-  const body = { jql: `${jql} ORDER BY created DESC`, maxResults, fields: FIELDS };
+/** A page of issues, each with `dims` for the admin-chosen breakdown fields. */
+async function searchPage(jql, maxResults, nextPageToken, breakdowns = []) {
+  const body = { jql: `${jql} ORDER BY created DESC`, maxResults, fields: [...FIELDS, ...breakdowns.map((b) => b.id)] };
   if (nextPageToken) body.nextPageToken = nextPageToken;
   const result = await jiraPost(route`/rest/api/3/search/jql`, body, 'Ticket search');
-  return { issues: result.issues || [], nextPageToken: result.nextPageToken };
+  const issues = (result.issues || []).map((issue) => ({ ...issue, dims: dimensionsOf(issue, breakdowns) }));
+  return { issues, nextPageToken: result.nextPageToken };
 }
 
 /** Runs async tasks with at most `limit` in flight, keeping result order. */
@@ -138,14 +141,16 @@ define('fetchTickets', async ({ payload, context }) => {
     throw new Error('Invalid ticket range.');
   }
   const deadline = Date.now() + FULL_CALL_BUDGET_MS;
+  const { breakdowns } = await loadSettings();
   const tickets = [];
   let token = typeof payload.nextPageToken === 'string' ? payload.nextPageToken : undefined;
   for (let page = 0; page < FULL_PAGES_PER_CALL; page += 1) {
-    const result = await searchPage(query.between(from, toExclusive), 100, token);
+    const result = await searchPage(query.between(from, toExclusive), 100, token, breakdowns);
     for (const issue of result.issues) {
       tickets.push({
         key: issue.key,
         self: issue.self,
+        dims: issue.dims,
         fields: {
           summary: issue.fields?.summary || '',
           description: textOf(issue.fields?.description).join(' ').slice(0, DESCRIPTION_CHARS),
@@ -169,9 +174,10 @@ define('analyze', async ({ payload, context }) => {
   let cutShort = false;
 
   // Exact totals first, so headline numbers and the comparison never depend on the sample.
-  const [currentTotal, previousTotal] = await Promise.all([
+  const [currentTotal, previousTotal, { breakdowns }] = await Promise.all([
     countIssues(between(startDate, endExclusive)),
     countIssues(between(previousStart, startDate)),
+    loadSettings(),
   ]);
 
   // Small periods are fetched in full. Large ones are sampled evenly: the newest
@@ -182,7 +188,7 @@ define('analyze', async ({ payload, context }) => {
       let token;
       do {
         if (Date.now() > deadline) { cutShort = true; break; }
-        const page = await searchPage(between(from, toExclusive), 100, token);
+        const page = await searchPage(between(from, toExclusive), 100, token, breakdowns);
         issues.push(...page.issues);
         token = page.nextPageToken;
       } while (token && issues.length < PERIOD_SAMPLE);
@@ -191,7 +197,7 @@ define('analyze', async ({ payload, context }) => {
     const perSlice = Math.min(100, Math.ceil(PERIOD_SAMPLE / SAMPLE_SLICES));
     const pages = await pool(dateSlices(from, toExclusive, SAMPLE_SLICES).map(([a, b]) => () => {
       if (Date.now() > deadline) { cutShort = true; return { issues: [] }; }
-      return searchPage(between(a, b), perSlice);
+      return searchPage(between(a, b), perSlice, undefined, breakdowns);
     }), CONCURRENCY);
     return pages.flatMap((page) => page.issues);
   }
@@ -208,9 +214,14 @@ define('analyze', async ({ payload, context }) => {
     timeSeries = buckets.map((b, i) => ({ date: b.date, count: counts[i] }));
   }
   const issues = [...currentIssues, ...previousIssues];
-  const report = buildReport(issues, startDate, endDate, { current: currentTotal, previous: previousTotal, timeSeries });
+  const report = buildReport(issues, startDate, endDate, { current: currentTotal, previous: previousTotal, timeSeries }, { breakdowns });
   console.log(`analyze: ${currentTotal}+${previousTotal} tickets, ${issues.length} fetched in ${Date.now() - startedAt}ms`);
-  return { ...report, organization: organization.name, startDate, endDate, previousStart, endExclusive, projectCount: cleanProjects.length || null, totalFetched: issues.length, cutShort };
+  return {
+    ...report,
+    organization: organization.name, startDate, endDate, previousStart, endExclusive,
+    projectCount: cleanProjects.length || null, totalFetched: issues.length, cutShort,
+    breakdownFields: breakdowns.map(({ id, label }) => ({ id, label })),
+  };
 });
 
 // Opt-in, separate from analyze so it gets its own time limit. The report comes
@@ -248,13 +259,16 @@ async function visibleOrganisation(orgId) {
   return { id: String(data.id), name: data.name };
 }
 
-// `forge variables set PORTAL_REPORTS off` hides portal publishing, for
-// releases that leave the portal module out of the manifest.
-const portalEnabled = () => String(process.env.PORTAL_REPORTS ?? '').trim().toLowerCase() !== 'off';
+// Portal publishing follows the admin setting. `forge variables set
+// PORTAL_REPORTS off` forces it off, for releases without the portal module.
+async function portalEnabled() {
+  if (String(process.env.PORTAL_REPORTS ?? '').trim().toLowerCase() === 'off') return false;
+  return (await loadSettings()).portalEnabled !== false;
+}
 
 define('getPublication', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
-  if (!portalEnabled()) return { portalEnabled: false, canPublish: false, published: null };
+  if (!(await portalEnabled())) return { portalEnabled: false, canPublish: false, published: null };
   const organization = await visibleOrganisation(payload?.orgId);
   const [allowed, published] = await Promise.all([canPublish(), loadReport(organization.id)]);
   return { portalEnabled: true, canPublish: allowed, published };
@@ -262,7 +276,7 @@ define('getPublication', async ({ payload, context }) => {
 
 define('publishReport', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
-  if (!portalEnabled()) throw new Error('Portal reports are switched off on this site.');
+  if (!(await portalEnabled())) throw new Error('Portal reports are switched off on this site.');
   if (!(await canPublish())) throw new Error('Only Jira admins and project admins can publish to the portal.');
   const organization = await visibleOrganisation(payload?.snapshot?.organization?.id);
   const snapshot = snapshotFrom({ ...payload.snapshot, organization }, { publishedBy: context?.accountId });
@@ -277,6 +291,40 @@ define('unpublishReport', async ({ payload, context }) => {
   const organization = await visibleOrganisation(payload?.orgId);
   await deleteReport(organization.id);
   return { removed: true };
+});
+
+// ---- Settings page (jira:adminPage): Jira admins only ------------------------
+
+async function isJiraAdmin() {
+  const response = await asUser().requestJira(route`/rest/api/3/mypermissions?permissions=ADMINISTER`, { headers: { Accept: 'application/json' } });
+  const data = await readJson(response, 'Permission check');
+  return Boolean(data.permissions?.ADMINISTER?.havePermission);
+}
+
+async function siteFields() {
+  const response = await asUser().requestJira(route`/rest/api/3/field`, { headers: { Accept: 'application/json' } });
+  return selectableFields(await readJson(response, 'Field list'));
+}
+
+define('getSettings', async ({ context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  if (!(await isJiraAdmin())) return { isAdmin: false };
+  const [settings, fields] = await Promise.all([loadSettings(), siteFields()]);
+  return {
+    isAdmin: true,
+    settings,
+    fields,
+    portalForcedOff: String(process.env.PORTAL_REPORTS ?? '').trim().toLowerCase() === 'off',
+  };
+});
+
+define('saveSettings', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  if (!(await isJiraAdmin())) throw new Error('Only Jira admins can change Customer Insights settings.');
+  const settings = sanitizeSettings(payload?.settings, await siteFields());
+  await saveSettings(settings);
+  console.log(`saveSettings: ${settings.breakdowns.length} breakdowns, portal ${settings.portalEnabled ? 'on' : 'off'}`);
+  return settings;
 });
 
 export const handler = resolver.getDefinitions();
