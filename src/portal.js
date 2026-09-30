@@ -5,7 +5,7 @@ import Resolver from '@forge/resolver';
 import { asApp, route } from '@forge/api';
 import { licenseAllows } from './license.js';
 import { portalView } from './publish.js';
-import { loadReport } from './storage.js';
+import { loadReport, loadSettings } from './storage.js';
 
 const ResolverClass = Resolver.default ?? Resolver;
 const resolver = new ResolverClass();
@@ -27,6 +27,8 @@ async function organisationsOf(accountId) {
 
 resolver.define('myReports', async ({ context }) => {
   if (!licenseAllows(context)) return { available: false, reports: [] };
+  const forcedOff = String(process.env.PORTAL_REPORTS ?? '').trim().toLowerCase() === 'off';
+  if (forcedOff || (await loadSettings()).portalEnabled === false) return { available: false, reports: [] };
   const accountId = context?.accountId;
   if (!accountId || accountId === 'unidentified') return { available: true, reports: [] };
   const orgIds = await organisationsOf(accountId);
