@@ -16,6 +16,8 @@ test('AI input is bounded: 12 patterns, 8 examples, clipped text', () => {
   assert.equal(input.patterns[0].exampleSummaries.length, 8);
   assert.equal(input.patterns[0].exampleSummaries[0].length <= 200, true);
   assert.equal(input.tickets, 6793);
+  assert.equal(input.patternCountsAreEstimates, false);
+  assert.equal(aiInput({ ...report, sampled: true }).patternCountsAreEstimates, true);
 });
 
 test('model output is validated: bad indexes and duplicates dropped, text bounded', () => {

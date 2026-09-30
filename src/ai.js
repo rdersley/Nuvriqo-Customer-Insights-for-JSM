@@ -18,6 +18,8 @@ export function aiInput(report) {
     period: `${report.startDate} to ${report.endDate}`,
     tickets: Number(report.currentCount) || 0,
     previousPeriodTickets: Number(report.previousCount) || 0,
+    // Ticket totals are exact; pattern counts are scaled from a sample when true.
+    patternCountsAreEstimates: Boolean(report.sampled),
     patterns: (report.groups || []).slice(0, MAX_PATTERNS).map((g, index) => ({
       index,
       ruleBasedName: clip(g.theme, 80),
@@ -60,7 +62,8 @@ const TOOL = {
 const SYSTEM = `You are a service desk analyst preparing a customer account review.
 You get recurring ticket patterns found by rule-based text matching, with counts and example ticket summaries.
 Use only the data given. Do not invent causes, numbers, dates or ticket details. Ticket codes such as crew IDs and airport codes are not problems.
-Counts may be estimates from a sample. Write in plain British English. Call report_insights once.`;
+Ticket totals are exact. When patternCountsAreEstimates is true, pattern counts are scaled up from a sample: describe them approximately ("around 250", "a handful", "several times more") and never quote small previous-period pattern counts as exact figures.
+Write in plain British English. Call report_insights once.`;
 
 export function aiMessages(input) {
   return [
