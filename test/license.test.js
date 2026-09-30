@@ -27,6 +27,8 @@ test('production evaluation sites need no licence object, but an inactive licenc
   assert.equal(licenseAllows({ ...prod(undefined), cloudId: 'zzz-999' }, env), false);
   assert.equal(licenseAllows(prod(undefined), env), false);
   assert.equal(licenseAllows({ ...prod({ active: false }), cloudId: 'abc-123' }, env), false);
+  // As stored after an unquoted PowerShell argument.
+  assert.equal(licenseAllows({ ...prod(undefined), cloudId: 'def-456' }, { EVALUATION_CLOUD_IDS: 'abc-123 def-456' }), true);
 });
 
 test('non-production allows a missing licence but honours simulated ones', () => {
