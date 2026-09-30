@@ -123,6 +123,22 @@ test('exact totals override a sample and pattern counts are scaled estimates', (
   assert.deepEqual(report.timeSeries, [{ date: '2026-09-16', count: 30 }]);
 });
 
+test('a pattern worded differently in each period still gets a trend', () => {
+  const issues = [
+    issue('SD-1', 'RYR - BOUZYA - STN - vPOS is Stuck', '2026-09-02T10:00:00Z'),
+    issue('SD-2', 'RYR - HAMDBO - EDI - vPOS stuck', '2026-09-03T10:00:00Z'),
+    issue('SD-3', 'RYR - JONMAR - DUB - Stuck on vPOS', '2026-09-04T10:00:00Z'),
+    issue('SD-4', 'RYR - LOPMAR - BGY - vPOS stuck again', '2026-09-17T10:00:00Z'),
+    issue('SD-5', 'RYR - WESDAN - MAN - stuck', '2026-09-18T10:00:00Z'),
+    issue('SD-6', 'RYR - KARAST - STN - Printer paper', '2026-09-19T10:00:00Z'),
+  ];
+  const report = buildReport(issues, '2026-09-16', '2026-09-29');
+  const stuck = report.groups.find((g) => /stuck/i.test(g.theme));
+  assert.equal(stuck.count, 2);
+  assert.equal(stuck.previousCount, 3);
+  assert.equal(stuck.tickets.every((t) => ['SD-4', 'SD-5'].includes(t.key)), true);
+});
+
 test('handles Jira rich text descriptions', () => {
   const issues = [
     issue('SD-1', 'Network issue at gate', '2026-09-10T10:00:00Z', { content: [{ text: 'airport wifi disconnected' }] }),

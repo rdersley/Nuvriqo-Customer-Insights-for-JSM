@@ -102,16 +102,19 @@ function vectorise(rows) {
     }
   }
   const df = new Map();
+  const descriptionDf = new Map();
   for (const { tokenized } of rows) {
     for (const word of new Set([...tokenized.summaryWords, ...tokenized.descriptionWords])) df.set(word, (df.get(word) || 0) + 1);
+    for (const word of tokenized.descriptionWords) descriptionDf.set(word, (descriptionDf.get(word) || 0) + 1);
   }
   const n = rows.length;
-  const tooCommon = (word) => n >= 6 && df.get(word) > n * MAX_SHARE;
+  // Template text lives in descriptions. Summary words are never dropped (a
+  // small customer's main problem can be in most summaries); IDF weighs them.
+  const tooCommon = (word) => n >= 6 && (descriptionDf.get(word) || 0) > n * MAX_SHARE;
   // A word only one ticket uses can't match anything, so it mostly dilutes.
   const idf = (word) => Math.log(1 + n / df.get(word)) * (n >= 6 && df.get(word) === 1 ? 0.5 : 1);
   for (const { tokenized } of rows) {
     const vector = new Map();
-    tokenized.summaryWords = tokenized.summaryWords.filter((w) => !tooCommon(w));
     for (const w of tokenized.summaryWords) vector.set(w, SUMMARY_WEIGHT * idf(w));
     for (const w of tokenized.descriptionWords) if (!tooCommon(w) && !vector.has(w)) vector.set(w, idf(w));
     let squared = 0;
@@ -161,8 +164,8 @@ function themeName(members, representative) {
  * Comparing with the whole cluster, not single tickets, stops one loose match
  * from chaining unrelated tickets together. Bounded for interactive use.
  */
-export function groupIssues(issues, threshold = 0.4) {
-  const rows = issues.slice(0, 900).map((issue) => ({ issue, tokenized: tokenize(issue) }));
+function cluster(issues, threshold, limit) {
+  const rows = issues.slice(0, limit).map((issue) => ({ issue, tokenized: tokenize(issue) }));
   vectorise(rows);
   rows.sort((a, b) => Date.parse(a.issue.fields.created) - Date.parse(b.issue.fields.created));
   const clusters = [];
@@ -184,25 +187,32 @@ export function groupIssues(issues, threshold = 0.4) {
       bySummaryWord.get(w).add(target);
     }
   }
-  return clusters
-    .filter((cluster) => cluster.members.length > 1)
-    .map(({ members, ...cluster }) => {
-      const representative = members.reduce((a, b) => (cosineToCluster(b, cluster) > cosineToCluster(a, cluster) ? b : a));
-      const ordered = members.map(({ issue }) => issue).sort((a, b) => Date.parse(b.fields.created) - Date.parse(a.fields.created));
-      return {
-        id: ordered.map((issue) => issue.key).sort().join('-'),
-        theme: themeName(members, representative),
-        count: ordered.length,
-        tickets: ordered.slice(0, 8).map((issue) => ({
-          key: issue.key,
-          summary: issue.fields.summary || '(No summary)',
-          status: issue.fields.status?.name || 'Unknown',
-          created: issue.fields.created,
-          url: issue.self ? issue.self.replace(/\/rest\/api\/.*$/, '/browse/' + issue.key) : issue.key,
-        })),
-        sampleSummary: representative.issue.fields.summary || '(No summary)',
-      };
-    })
+  return clusters;
+}
+
+/** A cluster as shown: named from all its members, evidence from `shown`. */
+function describe(found, shown = found.members) {
+  const representative = found.members.reduce((a, b) => (cosineToCluster(b, found) > cosineToCluster(a, found) ? b : a));
+  const ordered = shown.map(({ issue }) => issue).sort((a, b) => Date.parse(b.fields.created) - Date.parse(a.fields.created));
+  return {
+    id: ordered.map((issue) => issue.key).sort().join('-'),
+    theme: themeName(found.members, representative),
+    count: ordered.length,
+    tickets: ordered.slice(0, 8).map((issue) => ({
+      key: issue.key,
+      summary: issue.fields.summary || '(No summary)',
+      status: issue.fields.status?.name || 'Unknown',
+      created: issue.fields.created,
+      url: issue.self ? issue.self.replace(/\/rest\/api\/.*$/, '/browse/' + issue.key) : issue.key,
+    })),
+    sampleSummary: representative.issue.fields.summary || '(No summary)',
+  };
+}
+
+export function groupIssues(issues, threshold = 0.4) {
+  return cluster(issues, threshold, 900)
+    .filter((found) => found.members.length > 1)
+    .map((found) => describe(found))
     .sort((a, b) => b.count - a.count);
 }
 
@@ -248,29 +258,30 @@ export function buildReport(issues, periodStart, periodEnd, totals = null) {
   const previousCount = totals ? totals.previous : previous.length;
   const currentScale = current.length ? Math.max(1, currentCount / current.length) : 1;
   const previousScale = previous.length ? Math.max(1, previousCount / previous.length) : 1;
-  const scaled = (groups, scale) => groups.map((g) => ({ ...g, sampleCount: g.count, count: Math.round(g.count * scale), estimated: scale > 1 }));
-  const currentGroups = scaled(groupIssues(current), currentScale);
-  const previousGroups = scaled(groupIssues(previous), previousScale);
-  const oldCounts = new Map();
-  const normalizedWords = (theme) => new Set(theme.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
-  const trends = currentGroups.map((group) => {
-    const currentWords = normalizedWords(group.theme);
-    let prior = 0;
-    let bestScore = 0;
-    let bestIndex = -1;
-    previousGroups.forEach((oldGroup, index) => {
-      if (oldCounts.has(index)) return;
-      const oldWords = normalizedWords(oldGroup.theme);
-      const intersection = [...currentWords].filter((word) => oldWords.has(word)).length;
-      const score = intersection / Math.max(1, new Set([...currentWords, ...oldWords]).size);
-      if (score > bestScore) { bestScore = score; bestIndex = index; }
-    });
-    if (bestIndex >= 0 && bestScore >= 0.5) {
-      prior = previousGroups[bestIndex].count;
-      oldCounts.set(bestIndex, true);
-    }
-    return { ...group, previousCount: prior, change: group.count - prior, changePercent: prior ? Math.round(((group.count - prior) / prior) * 100) : null };
-  });
+  // Both periods are clustered together, so a pattern is the same group in each
+  // period and its trend compares like with like. Counts are scaled per period.
+  const currentKeys = new Set(current.map((issue) => issue.key));
+  const trends = cluster([...current.slice(0, 900), ...previous.slice(0, 900)], 0.4, 1800)
+    .map((found) => {
+      const now = found.members.filter((row) => currentKeys.has(row.issue.key));
+      return { found, now, before: found.members.length - now.length };
+    })
+    .filter(({ now }) => now.length > 1)
+    .map(({ found, now, before }) => {
+      const group = describe(found, now);
+      const count = Math.round(now.length * currentScale);
+      const prior = Math.round(before * previousScale);
+      return {
+        ...group,
+        sampleCount: now.length,
+        count,
+        estimated: currentScale > 1,
+        previousCount: prior,
+        change: count - prior,
+        changePercent: prior ? Math.round(((count - prior) / prior) * 100) : null,
+      };
+    })
+    .sort((a, b) => b.count - a.count);
   let timeSeries = totals?.timeSeries;
   if (!timeSeries) {
     const buckets = chartBuckets(periodStart, periodEnd);
