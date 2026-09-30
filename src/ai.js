@@ -139,7 +139,8 @@ const MERGE_TOOL = {
 
 const MERGE_SYSTEM = `You tidy up ticket groups found by rule-based text matching for a service desk.
 Several groups can be the same customer request or problem written differently: typos ("breset"), plurals, rewording ("open barset" / "opening barset" / "barset needs unlocking"), or extra codes such as airports, crew IDs and dates.
-Combine groups when an agent would handle their tickets the same way. Check the small groups too: a group of 2 or 3 tickets usually belongs in a larger issue of the same kind (for example "Unlock accounts" with "Account locked"). Keep genuinely different problems apart even if they share words (for example "vPOS crash" and "vPOS won't charge").
+Combine groups when an agent would handle their tickets the same way. Check small groups (2-3 tickets) as well, and add one to a larger issue only when its examples clearly are that same request (for example "Unlock accounts" with "Account locked"). Never use a broad issue as a catch-all: a password reset is not account creation, and removing a flight is not a login problem.
+If a group's examples are unrelated to each other, or it matches nothing else, keep it as its own issue with its own clear name. Keep genuinely different problems apart even if they share words (for example "vPOS crash" and "vPOS won't charge").
 Give every issue a clear name a customer would understand; do not reuse codes or people's names as the name.
 Put every index in exactly one issue. Use only the data given. Call merge_groups once.`;
 
