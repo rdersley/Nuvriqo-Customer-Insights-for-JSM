@@ -115,19 +115,19 @@ const MERGE_TOOL = {
   type: 'function',
   function: {
     name: 'merge_groups',
-    description: 'Return the groups that describe the same issue.',
+    description: 'Assign every group to exactly one issue and name each issue.',
     parameters: {
       type: 'object',
       required: ['issues'],
       properties: {
         issues: {
           type: 'array',
-          description: 'One entry per issue that combines two or more groups. Groups not listed stay as they are.',
+          description: 'Every input group index appears in exactly one issue. An issue can be a single group.',
           items: {
             type: 'object',
             required: ['title', 'members'],
             properties: {
-              title: { type: 'string', description: 'Plain name for the combined issue, at most 6 words, e.g. "Open a barset".' },
+              title: { type: 'string', description: 'Plain, specific name for the issue, at most 6 words, e.g. "Open a barset" or "vPOS app crashes".' },
               members: { type: 'array', items: { type: 'integer' }, description: 'Indexes of the groups that are this issue.' },
             },
           },
@@ -139,10 +139,14 @@ const MERGE_TOOL = {
 
 const MERGE_SYSTEM = `You tidy up ticket groups found by rule-based text matching for a service desk.
 Several groups can be the same customer request or problem written differently: typos ("breset"), plurals, rewording ("open barset" / "opening barset" / "barset needs unlocking"), or extra codes such as airports, crew IDs and dates.
-Combine groups only when an agent would handle their tickets the same way. Keep genuinely different problems apart even if they share words (for example "vPOS crash" and "vPOS won't charge").
-Each index may appear in at most one issue. Use only the data given. Call merge_groups once.`;
+Combine groups when an agent would handle their tickets the same way. Check the small groups too: a group of 2 or 3 tickets usually belongs in a larger issue of the same kind (for example "Unlock accounts" with "Account locked"). Keep genuinely different problems apart even if they share words (for example "vPOS crash" and "vPOS won't charge").
+Give every issue a clear name a customer would understand; do not reuse codes or people's names as the name.
+Put every index in exactly one issue. Use only the data given. Call merge_groups once.`;
 
-/** Validates merges: indexes in range, each used once, at least two per issue. */
+/**
+ * Validates merges: indexes in range and used once. One-group issues are
+ * renames. Groups the model left out simply keep their rule-based name.
+ */
 export function parseMerges(raw, groupCount) {
   const used = new Set();
   return (Array.isArray(raw?.issues) ? raw.issues : [])
@@ -151,7 +155,7 @@ export function parseMerges(raw, groupCount) {
       members: [...new Set(Array.isArray(issue?.members) ? issue.members : [])]
         .filter((i) => Number.isInteger(i) && i >= 0 && i < groupCount && !used.has(i) && used.add(i)),
     }))
-    .filter((issue) => issue.title && issue.members.length > 1);
+    .filter((issue) => issue.title && issue.members.length > 0);
 }
 
 async function callTool(chatFn, models, messages, tool) {

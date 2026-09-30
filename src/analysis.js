@@ -283,7 +283,8 @@ export function mergeGroups(groups, keyOf) {
 
 /**
  * Applies AI merges ({ title, members: [group indexes] }) to report groups.
- * Merged issues take the AI title; the rule-based names are kept in mergedFrom.
+ * Issues take the AI title and keep the rule-based name(s) in ruleNames; a
+ * one-member issue is just a rename.
  */
 export function applyMerges(groups, merges) {
   const issueOf = new Map();
@@ -292,7 +293,8 @@ export function applyMerges(groups, merges) {
   return mergeGroups(keyed, (g) => g._key).map(({ _key, ...group }) => {
     if (!_key.startsWith('ai:')) return group;
     const issue = merges[Number(_key.slice(3))];
-    return { ...group, theme: issue.title, mergedFrom: issue.members.map((i) => groups[i].theme) };
+    const ruleNames = issue.members.map((i) => groups[i].theme);
+    return { ...group, theme: issue.title, ruleNames, ...(ruleNames.length > 1 ? { mergedFrom: ruleNames } : {}) };
   });
 }
 

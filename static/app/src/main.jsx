@@ -170,7 +170,7 @@ function App() {
       try {
         const { merges } = await invoke('aiMerge', { report });
         merged = applyMerges(report.groups, merges);
-        mergedIssues = merges.length;
+        mergedIssues = merges.filter((m) => m.members.length > 1).length;
       } catch (e) {
         setAiError(`Similar patterns couldn’t be merged (${e.message || 'AI error'}); the summary uses the patterns as found.`);
       }
@@ -345,8 +345,8 @@ function App() {
             <summary>
               <span className="ci-pattern__title">
                 <strong>{patternName(group, index)}</strong>
-                {(aiPattern(index) || group.mergedFrom) && <small className="nq-muted">
-                  {group.mergedFrom ? `Combines ${group.mergedFrom.length}: ${group.mergedFrom.join(' · ')}` : group.theme}
+                {(aiPattern(index) || group.ruleNames) && <small className="nq-muted">
+                  {group.mergedFrom ? `Combines ${group.mergedFrom.length}: ${group.mergedFrom.join(' · ')}` : (group.ruleNames?.[0] || group.theme)}
                   {aiPattern(index)?.coherent === false && <> · <Lozenge kind="warning">Mixed</Lozenge></>}
                 </small>}
               </span>

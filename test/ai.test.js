@@ -63,14 +63,28 @@ const barsetGroups = [
   tickets: [{ key: `SD-${i}`, summary: `RYR - ${theme}`, created: `2026-08-${String(10 + i).padStart(2, '0')}T10:00:00Z`, status: 'Open', url: '#' }],
 }));
 
-test('merges are validated: in range, each group once, two or more per issue', () => {
+test('merges are validated: in range and each group once; single groups are renames', () => {
   const merges = parseMerges({ issues: [
     { title: 'Open a barset', members: [0, 1, 5, 6, 3, 99] },
     { title: 'Duplicate use', members: [0, 7] },
-    { title: 'Alone', members: [4] },
-    { title: '', members: [2, 7] },
+    { title: 'vPack login problems', members: [4] },
+    { title: '', members: [2] },
+    { title: 'Nothing valid', members: [0, 99] },
   ] }, 8);
-  assert.deepEqual(merges, [{ title: 'Open a barset', members: [0, 1, 5, 6, 3] }]);
+  assert.deepEqual(merges, [
+    { title: 'Open a barset', members: [0, 1, 5, 6, 3] },
+    { title: 'Duplicate use', members: [7] },
+    { title: 'vPack login problems', members: [4] },
+  ]);
+});
+
+test('a one-group issue renames it and keeps the rule-based name', () => {
+  const merged = applyMerges(barsetGroups, [{ title: 'vPack login problems', members: [4] }]);
+  const renamed = merged.find((g) => g.theme === 'vPack login problems');
+  assert.equal(renamed.count, 3);
+  assert.deepEqual(renamed.ruleNames, ['Ryanair vpack log ins']);
+  assert.equal('mergedFrom' in renamed, false);
+  assert.equal(merged.find((g) => g.theme === 'Broken tablets').ruleNames, undefined);
 });
 
 test('applying merges adds up counts and keeps other groups as they are', () => {
