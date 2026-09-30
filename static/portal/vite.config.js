@@ -7,7 +7,5 @@ export default defineConfig({
   // Forge serves Custom UI from a sub-path, so asset URLs must be relative.
   base: './',
   plugins: [react()],
-  // groupWorker.js imports the shared analysis module.
-  worker: { format: 'es' },
   build: { outDir: resolve(import.meta.dirname, 'build'), emptyOutDir: true },
 });
