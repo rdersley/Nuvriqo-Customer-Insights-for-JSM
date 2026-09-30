@@ -5,10 +5,36 @@ modules:
       resolver:
         function: resolver
       title: Customer Insights
-  # RELEASE (work site): no portal module yet; PORTAL_REPORTS=off hides publishing.
+  # Settings (Jira settings → Apps, and "Configure" in Manage apps). Jira
+  # admins only; checked again on the server.
+  jira:adminPage:
+    - key: customer-insights-settings
+      title: Customer Insights
+      resource: settings
+      resolver:
+        function: resolver
+      useAsConfig: true
+  # RELEASE (work site): no portal module yet; PORTAL_REPORTS=off keeps
+  # publishing off, so no live reports are created.
+  # Live portal reports (src/liveJobs.js): an hourly check queues the reports
+  # that are due; the consumer refreshes one organisation per event.
+  scheduledTrigger:
+    - key: live-reports-hourly
+      function: live-scheduler
+      interval: hour
+  consumer:
+    - key: live-report-consumer
+      queue: live-report-refresh
+      function: live-refresh
   function:
     - key: resolver
       handler: index.handler
+    - key: live-scheduler
+      handler: liveJobs.scheduler
+      timeoutSeconds: 120
+    - key: live-refresh
+      handler: liveJobs.consumer
+      timeoutSeconds: 900
   # Atlassian-hosted Claude for the opt-in AI summary (src/ai.js).
   llm:
     - key: insights-llm
@@ -17,6 +43,8 @@ modules:
 resources:
   - key: main
     path: static/app/build
+  - key: settings
+    path: static/settings/build
 app:
   runtime:
     name: nodejs22.x

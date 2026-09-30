@@ -7,6 +7,8 @@ export const MAX_PATTERNS = 15;
 const MAX_POINTS = 60;
 const ORG_ID = /^\d{1,18}$/;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$/;
+export const LIVE_SCHEDULES = ['daily', 'weekly'];
 
 const clip = (value, length) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, length);
 const count = (value) => (Number.isFinite(Number(value)) ? Math.max(0, Math.round(Number(value))) : 0);
@@ -46,14 +48,21 @@ export function snapshotFrom(input, { publishedBy, now = new Date() } = {}) {
     patterns,
     overview: clip(input?.overview, 1500),
     actions: (Array.isArray(input?.actions) ? input.actions : []).map((a) => clip(a, 240)).filter(Boolean).slice(0, 5),
-    publishedAt: now.toISOString(),
+    publishedAt: ISO_TIME.test(String(input?.publishedAt)) ? String(input.publishedAt) : now.toISOString(),
     publishedBy: String(publishedBy || ''),
+    // Live reports: the agent's summary keeps its date; numbers refresh.
+    summaryWrittenAt: ISO_TIME.test(String(input?.summaryWrittenAt)) ? String(input.summaryWrittenAt) : now.toISOString(),
+    refreshedAt: ISO_TIME.test(String(input?.refreshedAt)) ? String(input.refreshedAt) : now.toISOString(),
+    live: input?.live && LIVE_SCHEDULES.includes(input.live.schedule) ? { preset: clip(input.live.preset, 30), schedule: input.live.schedule } : null,
+    // Agent-only: patterns that fit no approved issue yet.
+    unreviewed: (Array.isArray(input?.unreviewed) ? input.unreviewed : []).slice(0, 10)
+      .map((u) => ({ title: clip(u?.title, 80), count: count(u?.count) })).filter((u) => u.title),
   };
 }
 
-/** What a customer sees: the snapshot without who published it. */
+/** What a customer sees: no publisher and no unreviewed agent notes. */
 export function portalView(snapshot) {
   if (!snapshot) return null;
-  const { publishedBy, ...visible } = snapshot;
+  const { publishedBy, unreviewed, ...visible } = snapshot;
   return visible;
 }

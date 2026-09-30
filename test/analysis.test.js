@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildReport, chartBuckets, groupIssues, tokenize } from '../src/analysis.js';
+import { buildReport, chartBuckets, groupIssues, mergeGroups, tokenize, topShares } from '../src/analysis.js';
 
 function issue(key, summary, created, description = '') {
   return {
@@ -159,6 +159,36 @@ test('groups that end up with the same name are merged', () => {
   const open = report.groups.filter((g) => /^open barset$/i.test(g.theme));
   assert.equal(open.length, 1);
   assert.equal(open[0].count, 4);
+});
+
+test('breakdowns count each field value per period, and patterns keep their own value counts', () => {
+  const at = (key, summary, created, base, devices) => ({ ...issue(key, summary, created), dims: { base: [base], device: devices } });
+  const issues = [
+    at('SD-1', 'RYR - vPOS stuck', '2026-09-16T10:00:00Z', 'STN', ['vPOS']),
+    at('SD-2', 'RYR - vPOS stuck again', '2026-09-17T10:00:00Z', 'STN', ['vPOS']),
+    at('SD-3', 'RYR - vPOS stuck on loading', '2026-09-18T10:00:00Z', 'DUB', ['vPOS', 'Pin pad']),
+    at('SD-4', 'RYR - Printer paper', '2026-09-19T10:00:00Z', 'DUB', ['Printer']),
+    at('SD-5', 'RYR - vPOS stuck', '2026-09-10T10:00:00Z', 'DUB', ['vPOS']),
+  ];
+  const breakdowns = [{ id: 'base', label: 'Base' }, { id: 'device', label: 'Device type' }];
+  const report = buildReport(issues, '2026-09-16', '2026-09-22', null, { breakdowns });
+  const base = report.breakdowns.find((b) => b.id === 'base');
+  assert.deepEqual(base.values, [
+    { value: 'STN', count: 2, previousCount: 0, change: 2 },
+    { value: 'DUB', count: 2, previousCount: 1, change: 1 },
+  ]);
+  assert.equal(report.breakdowns[1].values[0].value, 'vPOS');
+  const stuck = report.groups.find((g) => /stuck/i.test(g.theme));
+  assert.deepEqual(topShares(stuck, 'base'), [{ value: 'STN', share: 67 }, { value: 'DUB', share: 33 }]);
+});
+
+test('merging patterns adds up their field value counts', () => {
+  const a = { id: 'a', theme: 'x', count: 2, previousCount: 0, sampleCount: 2, tickets: [], dimCounts: { base: { STN: 2 } } };
+  const b = { id: 'b', theme: 'x', count: 3, previousCount: 1, sampleCount: 3, tickets: [], dimCounts: { base: { STN: 1, DUB: 2 } } };
+  const [merged] = mergeGroups([a, b], (g) => g.theme);
+  assert.deepEqual(merged.dimCounts, { base: { STN: 3, DUB: 2 } });
+  assert.deepEqual(topShares(merged, 'base'), [{ value: 'STN', share: 60 }, { value: 'DUB', share: 40 }]);
+  assert.deepEqual(a.dimCounts, { base: { STN: 2 } });
 });
 
 test('handles Jira rich text descriptions', () => {

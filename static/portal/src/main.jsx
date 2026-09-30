@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client';
 import { invoke, view } from '@forge/bridge';
 import '@nuvriqo/ui/css';
 import { enableTheme } from '@nuvriqo/ui/theme';
-import { Card, EmptyState, Kpi, Loading, Lozenge, Notice } from '@nuvriqo/ui/react';
+import { Button, Card, EmptyState, Kpi, Loading, Lozenge, Notice } from '@nuvriqo/ui/react';
 import './styles.css';
 
 enableTheme(view);
@@ -21,22 +21,34 @@ function Trend({ pattern }) {
   return <Lozenge>Steady</Lozenge>;
 }
 
-function Report({ report }) {
+const time = (ms) => new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+
+function Report({ report, onRefresh, refreshNote }) {
   const { totals } = report;
+  const waitUntil = report.nextRefreshAt && report.nextRefreshAt > Date.now() ? report.nextRefreshAt : null;
   return <div className="nq-stack">
     <div className="nq-spread cp-title">
       <div>
         <h2 className="nq-card__title">{report.organization.name}</h2>
         <p className="nq-muted">{longDate(report.period.from)} – {longDate(report.period.to)}</p>
       </div>
-      <span className="nq-muted">Published {new Date(report.publishedAt).toLocaleDateString()}</span>
+      <div className="cp-updated">
+        <span className="nq-muted">{report.live ? `Updated ${new Date(report.refreshedAt).toLocaleString()}` : `Published ${new Date(report.publishedAt).toLocaleDateString()}`}</span>
+        {report.live && <Button small onClick={onRefresh} disabled={report.refreshing || Boolean(waitUntil)}
+          title={waitUntil ? `Available again at ${time(waitUntil)}` : undefined}>
+          {report.refreshing ? 'Updating…' : 'Refresh'}
+        </Button>}
+      </div>
     </div>
+    {refreshNote && <Notice>{refreshNote}</Notice>}
     <div className="nq-kpis">
       <Kpi icon="▤" label="Requests" value={totals.current.toLocaleString()} hint="in this period" />
       <Kpi icon="↗" kind={totals.changePercent > 0 ? 'warning' : totals.changePercent < 0 ? 'success' : 'info'} label="Vs previous period"
         value={totals.changePercent === null ? '—' : `${signed(totals.changePercent)}%`} hint={`previous period: ${totals.previous.toLocaleString()}`} />
     </div>
-    {report.overview && <Card title="Summary"><p className="cp-text">{report.overview}</p></Card>}
+    {report.overview && <Card title="Summary" footer={report.live && <span className="nq-muted">Written {longDate(report.summaryWrittenAt.slice(0, 10))}. The numbers on this page are kept up to date.</span>}>
+      <p className="cp-text">{report.overview}</p>
+    </Card>}
     {report.patterns.length > 0 && <Card title="Most common issues">
       <ol className="cp-issues">{report.patterns.map((p) => <li key={p.title}>
         <div>
@@ -53,13 +65,41 @@ function Report({ report }) {
   </div>;
 }
 
+const POLL_MS = 15000;
+const POLL_FOR_MS = 5 * 60000;
+
 function App() {
   const [state, setState] = useState({ loading: true });
-  useEffect(() => {
-    invoke('myReports')
-      .then((result) => setState({ loading: false, ...result }))
-      .catch((error) => setState({ loading: false, error: error.message || 'The service report could not be loaded.' }));
-  }, []);
+  const [notes, setNotes] = useState({});
+  const load = () => invoke('myReports')
+    .then((result) => { setState({ loading: false, ...result }); return result; })
+    .catch((error) => setState({ loading: false, error: error.message || 'The service report could not be loaded.' }));
+  useEffect(() => { load(); }, []);
+
+  async function refresh(report) {
+    const orgId = report.organization.id;
+    setNotes((n) => ({ ...n, [orgId]: '' }));
+    try {
+      const result = await invoke('refreshMyReport', { orgId });
+      if (!result.queued) {
+        setNotes((n) => ({ ...n, [orgId]: `This report was updated recently. You can refresh it again at ${time(result.nextRefreshAt)}.` }));
+        return;
+      }
+      setNotes((n) => ({ ...n, [orgId]: 'Updating your report. This usually takes a minute or two; the page updates by itself.' }));
+      const before = report.refreshedAt;
+      const stopAt = Date.now() + POLL_FOR_MS;
+      const poll = async () => {
+        const latest = await load();
+        const updated = latest?.reports?.find((r) => r.organization.id === orgId);
+        if (updated && updated.refreshedAt !== before) { setNotes((n) => ({ ...n, [orgId]: '' })); return; }
+        if (Date.now() < stopAt) setTimeout(poll, POLL_MS);
+        else setNotes((n) => ({ ...n, [orgId]: 'The update is taking longer than usual. Check back shortly.' }));
+      };
+      setTimeout(poll, POLL_MS);
+    } catch (error) {
+      setNotes((n) => ({ ...n, [orgId]: error.message || 'The report could not be refreshed.' }));
+    }
+  }
 
   if (state.loading) return <div className="nq-page"><Loading text="Loading your service report…" /></div>;
   return <div className="nq-page nq-page--panel">
@@ -68,7 +108,7 @@ function App() {
     {!state.error && state.available !== false && !state.reports?.length && <EmptyState title="No service report yet">
       Your service team hasn’t published a report for your organisation yet.
     </EmptyState>}
-    {state.reports?.map((report) => <Report key={report.organization.id} report={report} />)}
+    {state.reports?.map((report) => <Report key={report.organization.id} report={report} onRefresh={() => refresh(report)} refreshNote={notes[report.organization.id]} />)}
   </div>;
 }
 

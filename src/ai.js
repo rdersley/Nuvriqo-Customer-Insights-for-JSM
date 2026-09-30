@@ -4,11 +4,13 @@
 // @forge/llm throws on import outside the Forge runtime, so it is loaded on
 // first use; tests pass their own chatFn.
 const forgeChat = async (prompt) => (await import('@forge/llm')).chat(prompt);
+import { topShares } from './analysis.js';
 
 // Preferred first. Haiku 4.5 is avoided: Forge retires it on 2026-10-15.
 export const MODELS = ['claude-sonnet-5', 'claude-sonnet-4-6'];
 const MAX_PATTERNS = 12;
 const MAX_EXAMPLES = 8;
+const MAX_VALUES = 6;
 const clip = (value, length) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, length);
 
 /** The report reduced to what the model needs, with sizes bounded. */
@@ -20,12 +22,18 @@ export function aiInput(report) {
     previousPeriodTickets: Number(report.previousCount) || 0,
     // Ticket totals are exact; pattern counts are scaled from a sample when true.
     patternCountsAreEstimates: Boolean(report.sampled),
+    // Admin-chosen fields (e.g. base, device type): where tickets come from.
+    breakdowns: (report.breakdowns || []).map((b) => ({
+      field: clip(b.label, 40),
+      top: b.values.slice(0, MAX_VALUES).map((v) => ({ value: clip(v.value, 60), tickets: v.count, previousPeriodTickets: v.previousCount })),
+    })),
     patterns: (report.groups || []).slice(0, MAX_PATTERNS).map((g, index) => ({
       index,
       ruleBasedName: clip(g.theme, 80),
       tickets: Number(g.count) || 0,
       previousPeriodTickets: Number(g.previousCount) || 0,
       exampleSummaries: (g.tickets || []).slice(0, MAX_EXAMPLES).map((t) => clip(t.summary, 200)),
+      where: Object.fromEntries((report.breakdownFields || []).map((f) => [clip(f.label, 40), topShares(g, f.id).map((s) => `${clip(s.value, 60)} ${s.share}%`)]).filter(([, v]) => v.length)),
     })),
   };
 }
@@ -62,6 +70,7 @@ const TOOL = {
 const SYSTEM = `You are a service desk analyst preparing a customer account review.
 You get recurring ticket patterns found by rule-based text matching, with counts and example ticket summaries.
 Use only the data given. Do not invent causes, numbers, dates or ticket details. Ticket codes such as crew IDs and airport codes are not problems.
+breakdowns and each pattern's "where" show how tickets split across fields the admin chose (for example base or device type). Mention a concentration only when it is clear (for example most of a pattern at one base, or one value growing fast).
 Ticket totals are exact. When patternCountsAreEstimates is true, pattern counts are scaled up from a sample: describe them approximately ("around 250", "a handful", "several times more") and never quote small previous-period pattern counts as exact figures.
 Write in plain British English. Call report_insights once.`;
 
@@ -187,6 +196,61 @@ export async function suggestMerges(report, { chatFn = forgeChat, models = MODEL
     { role: 'user', content: `Ticket groups as JSON:\n${JSON.stringify(input)}` },
   ], MERGE_TOOL);
   return { merges: parseMerges(raw, input.length), model };
+}
+
+// ---- Live refresh: sort fresh patterns into the agent's approved issues -------
+
+const ASSIGN_TOOL = {
+  type: 'function',
+  function: {
+    name: 'assign_groups',
+    description: 'Assign each ticket group to one of the approved issues, or to none.',
+    parameters: {
+      type: 'object',
+      required: ['assignments'],
+      properties: {
+        assignments: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['index', 'issue'],
+            properties: {
+              index: { type: 'integer', description: 'Group index.' },
+              issue: { type: 'integer', description: 'Approved issue number, or -1 when none fits.' },
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
+const ASSIGN_SYSTEM = `You keep a customer's service report up to date. An agent approved a list of issues; new ticket groups have been found by rule-based text matching.
+Assign each group to the approved issue it clearly belongs to, allowing for typos, rewording and codes such as airports, crew IDs and dates. Use -1 when no approved issue clearly fits; never force a group into an issue.
+Use only the data given. Call assign_groups once.`;
+
+/** Validated assignments, one per group index (default -1). */
+export function parseAssignments(raw, groupCount, approvedCount) {
+  const out = new Array(groupCount).fill(-1);
+  const seen = new Set();
+  for (const a of Array.isArray(raw?.assignments) ? raw.assignments : []) {
+    if (!Number.isInteger(a?.index) || a.index < 0 || a.index >= groupCount || seen.has(a.index)) continue;
+    seen.add(a.index);
+    out[a.index] = Number.isInteger(a.issue) && a.issue >= 0 && a.issue < approvedCount ? a.issue : -1;
+  }
+  return out;
+}
+
+export async function assignToApproved(report, approved, { chatFn = forgeChat, models = MODELS } = {}) {
+  const groups = mergeInput(report);
+  if (!groups.length || !approved.length) return { assignments: (report.groups || []).map(() => -1), model: null };
+  const { raw, model } = await callTool(chatFn, models, [
+    { role: 'system', content: ASSIGN_SYSTEM },
+    { role: 'user', content: `Approved issues as JSON:\n${JSON.stringify(approved.map((a, i) => ({ issue: i, title: clip(a.title, 80), summary: clip(a.summary, 200) })))}\n\nTicket groups as JSON:\n${JSON.stringify(groups)}` },
+  ], ASSIGN_TOOL);
+  const assignments = parseAssignments(raw, groups.length, approved.length);
+  // Groups beyond the ones sent stay unassigned.
+  return { assignments: [...assignments, ...new Array(Math.max(0, (report.groups || []).length - assignments.length)).fill(-1)], model };
 }
 
 // ---- Summary -------------------------------------------------------------------

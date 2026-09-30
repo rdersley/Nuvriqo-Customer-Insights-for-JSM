@@ -255,6 +255,62 @@ export function groupIssues(issues, threshold = 0.4) {
     .sort((a, b) => b.count - a.count);
 }
 
+// ---- Breakdowns by admin-chosen fields ---------------------------------------
+// Issues carry `dims`: { fieldId: [values] } (see settings.js dimensionsOf).
+
+/** { fieldId: { value: tickets } } for a set of issues. */
+export function dimCountsOf(issues) {
+  const counts = {};
+  for (const issue of issues) {
+    for (const [id, values] of Object.entries(issue.dims || {})) {
+      counts[id] ||= {};
+      for (const v of values) counts[id][v] = (counts[id][v] || 0) + 1;
+    }
+  }
+  return counts;
+}
+
+function addDimCounts(a = {}, b = {}) {
+  const out = structuredClone(a);
+  for (const [id, values] of Object.entries(b)) {
+    out[id] ||= {};
+    for (const [v, n] of Object.entries(values)) out[id][v] = (out[id][v] || 0) + n;
+  }
+  return out;
+}
+
+/** A pattern's top values for one field, as shares of its sampled tickets. */
+export function topShares(group, fieldId, limit = 3) {
+  const counts = group?.dimCounts?.[fieldId] || {};
+  const total = group?.sampleCount || Object.values(counts).reduce((s, n) => s + n, 0) || 1;
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([value, n]) => ({ value, share: Math.round((n / total) * 100) }));
+}
+
+const BREAKDOWN_VALUES = 10;
+
+function buildBreakdowns(breakdowns, current, previous, currentScale, previousScale) {
+  const now = dimCountsOf(current);
+  const before = dimCountsOf(previous);
+  return breakdowns.map(({ id, label }) => {
+    const cur = now[id] || {};
+    const prev = before[id] || {};
+    const values = Object.keys({ ...cur, ...prev })
+      .map((value) => {
+        const count = Math.round((cur[value] || 0) * currentScale);
+        const previousCount = Math.round((prev[value] || 0) * previousScale);
+        return { value, count, previousCount, change: count - previousCount };
+      })
+      .filter((v) => v.count > 0)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, BREAKDOWN_VALUES);
+    const withValue = current.filter((issue) => issue.dims?.[id]?.length).length;
+    return { id, label, values, withoutValue: Math.round((current.length - withValue) * currentScale), estimated: currentScale > 1 };
+  });
+}
+
 /**
  * Combines report groups that share a key (the same name, or an AI merge).
  * Clusters never share tickets, so counts add up. The first group of each key
@@ -275,6 +331,7 @@ export function mergeGroups(groups, keyOf) {
     existing.sampleCount = (existing.sampleCount ?? 0) + (group.sampleCount ?? 0);
     existing.estimated = existing.estimated || group.estimated;
     existing.tickets = [...existing.tickets, ...group.tickets].sort((a, b) => Date.parse(b.created) - Date.parse(a.created)).slice(0, 8);
+    existing.dimCounts = addDimCounts(existing.dimCounts, group.dimCounts);
   }
   return [...merged.values()]
     .map((g) => ({ ...g, change: g.count - g.previousCount, changePercent: g.previousCount ? Math.round(((g.count - g.previousCount) / g.previousCount) * 100) : null }))
@@ -327,7 +384,7 @@ export function chartBuckets(periodStart, periodEnd) {
 /** Most tickets per period grouped in one Forge call (the browser passes Infinity). */
 export const PERIOD_LIMIT = 900;
 
-export function buildReport(issues, periodStart, periodEnd, totals = null, { limit = PERIOD_LIMIT } = {}) {
+export function buildReport(issues, periodStart, periodEnd, totals = null, { limit = PERIOD_LIMIT, breakdowns = [] } = {}) {
   const from = Date.parse(periodStart);
   const to = Date.parse(periodEnd + 'T23:59:59Z');
   const duration = Math.max(1, to - from);
@@ -364,6 +421,7 @@ export function buildReport(issues, periodStart, periodEnd, totals = null, { lim
         previousCount: prior,
         change: count - prior,
         changePercent: prior ? Math.round(((count - prior) / prior) * 100) : null,
+        dimCounts: dimCountsOf(now.map((row) => row.issue)),
       };
     })
     .sort((a, b) => b.count - a.count);
@@ -386,6 +444,7 @@ export function buildReport(issues, periodStart, periodEnd, totals = null, { lim
     changePercent: previousCount ? Math.round(((currentCount - previousCount) / previousCount) * 100) : null,
     groups,
     timeSeries,
+    breakdowns: buildBreakdowns(breakdowns, current, previous, currentScale, previousScale),
     analyzedCount: Math.min(current.length, limit),
     sampled: currentScale > 1 || previousScale > 1,
     capped: current.length > limit || previous.length > limit,
