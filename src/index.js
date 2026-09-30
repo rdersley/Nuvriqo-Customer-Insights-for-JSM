@@ -2,7 +2,7 @@ import ResolverModule from '@forge/resolver';
 import { asUser, route } from '@forge/api';
 import { buildReport, chartBuckets, textOf } from './analysis.js';
 import { licenseAllows, UNLICENSED_MESSAGE } from './license.js';
-import { summarise } from './ai.js';
+import { suggestMerges, summarise } from './ai.js';
 import { snapshotFrom } from './publish.js';
 import { deleteReport, loadReport, saveReport } from './storage.js';
 
@@ -215,6 +215,16 @@ define('analyze', async ({ payload, context }) => {
 
 // Opt-in, separate from analyze so it gets its own time limit. The report comes
 // from this user's own analysis in the page; aiInput() bounds what is sent.
+// Step 1 of the AI summary: which rule-based groups are the same issue. Only
+// indexes and titles come back; counts are added up by applyMerges().
+define('aiMerge', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  const startedAt = Date.now();
+  const result = await suggestMerges(payload?.report || {});
+  console.log(`aiMerge: ${result.model}, ${result.merges.length} merged issues in ${Date.now() - startedAt}ms`);
+  return result;
+});
+
 define('aiSummary', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
   const startedAt = Date.now();

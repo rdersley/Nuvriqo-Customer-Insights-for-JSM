@@ -72,9 +72,9 @@ export function aiMessages(input) {
   ];
 }
 
-function argumentsOf(response) {
+function argumentsOf(response, name = TOOL.function.name) {
   const message = response?.choices?.[0]?.message;
-  const call = message?.tool_calls?.find((c) => c.function?.name === TOOL.function.name);
+  const call = message?.tool_calls?.find((c) => c.function?.name === name);
   if (call) return typeof call.function.arguments === 'string' ? JSON.parse(call.function.arguments) : call.function.arguments;
   // Fallback: a JSON object in the text.
   const text = Array.isArray(message?.content) ? message.content.map((p) => p.text || '').join('') : String(message?.content || '');
@@ -96,6 +96,95 @@ export function parseInsights(raw, patternCount) {
     actions: (Array.isArray(raw.actions) ? raw.actions : []).map((a) => clip(a, 240)).filter(Boolean).slice(0, 3),
   };
 }
+
+// ---- Merging: which rule-based groups are the same issue ----------------------
+
+const MERGE_GROUPS = 40;
+const MERGE_EXAMPLES = 4;
+
+export function mergeInput(report) {
+  return (report.groups || []).slice(0, MERGE_GROUPS).map((g, index) => ({
+    index,
+    name: clip(g.theme, 60),
+    tickets: Number(g.count) || 0,
+    examples: (g.tickets || []).slice(0, MERGE_EXAMPLES).map((t) => clip(t.summary, 120)),
+  }));
+}
+
+const MERGE_TOOL = {
+  type: 'function',
+  function: {
+    name: 'merge_groups',
+    description: 'Return the groups that describe the same issue.',
+    parameters: {
+      type: 'object',
+      required: ['issues'],
+      properties: {
+        issues: {
+          type: 'array',
+          description: 'One entry per issue that combines two or more groups. Groups not listed stay as they are.',
+          items: {
+            type: 'object',
+            required: ['title', 'members'],
+            properties: {
+              title: { type: 'string', description: 'Plain name for the combined issue, at most 6 words, e.g. "Open a barset".' },
+              members: { type: 'array', items: { type: 'integer' }, description: 'Indexes of the groups that are this issue.' },
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
+const MERGE_SYSTEM = `You tidy up ticket groups found by rule-based text matching for a service desk.
+Several groups can be the same customer request or problem written differently: typos ("breset"), plurals, rewording ("open barset" / "opening barset" / "barset needs unlocking"), or extra codes such as airports, crew IDs and dates.
+Combine groups only when an agent would handle their tickets the same way. Keep genuinely different problems apart even if they share words (for example "vPOS crash" and "vPOS won't charge").
+Each index may appear in at most one issue. Use only the data given. Call merge_groups once.`;
+
+/** Validates merges: indexes in range, each used once, at least two per issue. */
+export function parseMerges(raw, groupCount) {
+  const used = new Set();
+  return (Array.isArray(raw?.issues) ? raw.issues : [])
+    .map((issue) => ({
+      title: clip(issue?.title, 80),
+      members: [...new Set(Array.isArray(issue?.members) ? issue.members : [])]
+        .filter((i) => Number.isInteger(i) && i >= 0 && i < groupCount && !used.has(i) && used.add(i)),
+    }))
+    .filter((issue) => issue.title && issue.members.length > 1);
+}
+
+async function callTool(chatFn, models, messages, tool) {
+  let lastError;
+  for (const model of models) {
+    try {
+      const response = await chatFn({
+        model,
+        messages,
+        tools: [tool],
+        tool_choice: { type: 'function', function: { name: tool.function.name } },
+        max_completion_tokens: 2000,
+      });
+      return { raw: argumentsOf(response, tool.function.name), model };
+    } catch (error) {
+      lastError = error;
+      if (!/model|not allowed|not found|unsupported/i.test(String(error?.message))) break;
+    }
+  }
+  throw new Error(`AI request failed: ${lastError?.message || 'unknown error'}`);
+}
+
+export async function suggestMerges(report, { chatFn = forgeChat, models = MODELS } = {}) {
+  const input = mergeInput(report);
+  if (input.length < 2) return { merges: [], model: null };
+  const { raw, model } = await callTool(chatFn, models, [
+    { role: 'system', content: MERGE_SYSTEM },
+    { role: 'user', content: `Ticket groups as JSON:\n${JSON.stringify(input)}` },
+  ], MERGE_TOOL);
+  return { merges: parseMerges(raw, input.length), model };
+}
+
+// ---- Summary -------------------------------------------------------------------
 
 export async function summarise(report, { chatFn = forgeChat, models = MODELS } = {}) {
   const input = aiInput(report);

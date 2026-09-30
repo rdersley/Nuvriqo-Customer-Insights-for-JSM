@@ -4,7 +4,11 @@ const STOP = new Set(`about above after again against all also am an and any are
 const GENERIC = new Set('issue issues problem problems please help request ticket hello thanks thank regards team kind dear will cannot cant need'.split(' '));
 // "RYR - KURVIK - PFO - DEVICE CRASHES": customer, crew and airport codes are
 // single all-caps tokens. They identify who and where, not what went wrong.
+const DATE_OR_REF = /^([A-Z]{2,5}\d{2,8}|\d{1,2}[./]\d{1,2}([./]\d{2,4})?)$/;
 const CODE_SEGMENT = /^[A-Z0-9]{2,8}$/;
+const isCode = (s) => CODE_SEGMENT.test(s) || DATE_OR_REF.test(s);
+// Dates (19.07.2026, 07.08) and references (no.DUB24150) inside the text.
+const REFERENCE = /\b(no\.?\s*)?([A-Z]{2,5}\d{3,}|\d{1,2}[./]\d{1,2}([./]\d{2,4})?)\b/gi;
 
 /** Visible text of a plain string or an Atlassian Document Format node. */
 export function textOf(value, output = []) {
@@ -19,9 +23,18 @@ export function textOf(value, output = []) {
 
 /** Summary without its code segments. The last segment is kept: it is usually the problem. */
 export function problemText(summary) {
-  const segments = summary.split(/\s+[-\u2013\u2014|:]\s+/).map((s) => s.trim()).filter(Boolean);
-  if (segments.length < 2) return summary;
-  return segments.filter((s, i) => i === segments.length - 1 || !CODE_SEGMENT.test(s)).join(' ');
+  const normalised = summary
+    .replace(/\s*\/\/\s*/g, ' - ') // "OPEN BARSET // LIS // 07.08"
+    .replace(/(^|[\s-])([A-Z0-9]{2,8})-(?=\S)/g, '$1$2 - ') // "RYR-BOND-open barset"
+    .replace(/(^|[\s-])([A-Z0-9]{2,8})-(?=\S)/g, '$1$2 - '); // second pass for chained codes
+  const segments = normalised.split(/\s+[-\u2013\u2014|:]\s+/).map((s) => s.trim()).filter(Boolean);
+  if (segments.length < 2) return normalised.replace(REFERENCE, ' ');
+  const words = segments.filter((s) => !isCode(s));
+  if (words.length) return words.join(' ').replace(REFERENCE, ' ');
+  // Only codes ("RYR - CAUGAR - TSF"): the last non-date one is the problem.
+  let last = segments.length - 1;
+  while (last > 0 && DATE_OR_REF.test(segments[last])) last -= 1;
+  return segments[last];
 }
 
 function rawWords(text) {
@@ -242,6 +255,47 @@ export function groupIssues(issues, threshold = 0.4) {
     .sort((a, b) => b.count - a.count);
 }
 
+/**
+ * Combines report groups that share a key (the same name, or an AI merge).
+ * Clusters never share tickets, so counts add up. The first group of each key
+ * (the largest, as groups arrive sorted) keeps its name and example.
+ */
+export function mergeGroups(groups, keyOf) {
+  const merged = new Map();
+  for (const group of groups) {
+    const key = keyOf(group);
+    const existing = merged.get(key);
+    if (!existing) {
+      merged.set(key, { ...group, tickets: [...group.tickets] });
+      continue;
+    }
+    existing.id = `${existing.id}-${group.id}`;
+    existing.count += group.count;
+    existing.previousCount += group.previousCount;
+    existing.sampleCount = (existing.sampleCount ?? 0) + (group.sampleCount ?? 0);
+    existing.estimated = existing.estimated || group.estimated;
+    existing.tickets = [...existing.tickets, ...group.tickets].sort((a, b) => Date.parse(b.created) - Date.parse(a.created)).slice(0, 8);
+  }
+  return [...merged.values()]
+    .map((g) => ({ ...g, change: g.count - g.previousCount, changePercent: g.previousCount ? Math.round(((g.count - g.previousCount) / g.previousCount) * 100) : null }))
+    .sort((a, b) => b.count - a.count);
+}
+
+/**
+ * Applies AI merges ({ title, members: [group indexes] }) to report groups.
+ * Merged issues take the AI title; the rule-based names are kept in mergedFrom.
+ */
+export function applyMerges(groups, merges) {
+  const issueOf = new Map();
+  merges.forEach((issue, n) => issue.members.forEach((index) => issueOf.set(index, n)));
+  const keyed = groups.map((group, index) => ({ ...group, _key: issueOf.has(index) ? `ai:${issueOf.get(index)}` : `g:${index}` }));
+  return mergeGroups(keyed, (g) => g._key).map(({ _key, ...group }) => {
+    if (!_key.startsWith('ai:')) return group;
+    const issue = merges[Number(_key.slice(3))];
+    return { ...group, theme: issue.title, mergedFrom: issue.members.map((i) => groups[i].theme) };
+  });
+}
+
 const DAY = 86400000;
 const isoDay = (ms) => new Date(ms).toISOString().slice(0, 10);
 
@@ -311,6 +365,7 @@ export function buildReport(issues, periodStart, periodEnd, totals = null, { lim
       };
     })
     .sort((a, b) => b.count - a.count);
+  const groups = mergeGroups(trends, (g) => g.theme.toLowerCase());
   let timeSeries = totals?.timeSeries;
   if (!timeSeries) {
     const buckets = chartBuckets(periodStart, periodEnd);
@@ -327,7 +382,7 @@ export function buildReport(issues, periodStart, periodEnd, totals = null, { lim
     previousCount,
     change: currentCount - previousCount,
     changePercent: previousCount ? Math.round(((currentCount - previousCount) / previousCount) * 100) : null,
-    groups: trends,
+    groups,
     timeSeries,
     analyzedCount: Math.min(current.length, limit),
     sampled: currentScale > 1 || previousScale > 1,
