@@ -2,6 +2,7 @@ import ResolverModule from '@forge/resolver';
 import { asUser, route } from '@forge/api';
 import { buildReport, chartBuckets } from './analysis.js';
 import { licenseAllows, UNLICENSED_MESSAGE } from './license.js';
+import { summarise } from './ai.js';
 
 // This package is "type": "module"; Forge's bundler then hands CommonJS packages
 // over as their exports object, so the class sits on `.default`.
@@ -148,6 +149,16 @@ resolver.define('analyze', async ({ payload, context }) => {
   const report = buildReport(issues, startDate, endDate, { current: currentTotal, previous: previousTotal, timeSeries });
   console.log(`analyze: ${currentTotal}+${previousTotal} tickets, ${issues.length} fetched in ${Date.now() - startedAt}ms`);
   return { ...report, organization: organization.name, startDate, endDate, projectCount: cleanProjects.length || null, totalFetched: issues.length, cutShort };
+});
+
+// Opt-in, separate from analyze so it gets its own time limit. The report comes
+// from this user's own analysis in the page; aiInput() bounds what is sent.
+resolver.define('aiSummary', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  const startedAt = Date.now();
+  const result = await summarise(payload?.report || {});
+  console.log(`aiSummary: ${result.model}, ${result.patterns.length} patterns in ${Date.now() - startedAt}ms`);
+  return result;
 });
 
 export const handler = resolver.getDefinitions();

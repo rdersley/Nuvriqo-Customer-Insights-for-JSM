@@ -8,6 +8,11 @@ modules:
   function:
     - key: resolver
       handler: index.handler
+  # Atlassian-hosted Claude for the opt-in AI summary (src/ai.js).
+  llm:
+    - key: insights-llm
+      model:
+        - claude
 resources:
   - key: main
     path: static/app/build

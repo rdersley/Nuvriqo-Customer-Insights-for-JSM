@@ -34,6 +34,9 @@ function App() {
   const [error, setError] = useState('');
   const [queryOpen, setQueryOpen] = useState(false);
   const [licensed, setLicensed] = useState(true);
+  const [ai, setAi] = useState(null);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState('');
 
   useEffect(() => {
     invoke('getOrganizations').then((result) => {
@@ -55,7 +58,7 @@ function App() {
   async function runAnalysis(event) {
     event?.preventDefault();
     if (!selectedOrg) return;
-    setLoadingReport(true); setError(''); setReport(null);
+    setLoadingReport(true); setError(''); setReport(null); setAi(null); setAiError('');
     try {
       const result = await invoke('analyze', { organization: selectedOrg, startDate: from, endDate: to, projects });
       setReport(result);
@@ -63,10 +66,23 @@ function App() {
     finally { setLoadingReport(false); }
   }
 
+  async function runAi() {
+    setAiLoading(true); setAiError('');
+    try { setAi(await invoke('aiSummary', { report })); }
+    catch (e) { setAiError(e.message || 'The AI summary could not be created.'); }
+    finally { setAiLoading(false); }
+  }
+
+  // AI names apply to the first patterns only (aiInput sends 12); the index is the report order.
+  const aiPattern = (index) => ai?.patterns.find((p) => p.index === index);
+  const patternName = (group, index) => aiPattern(index)?.title || group.theme;
+
   function exportCsv() {
     if (!report) return;
-    const rows = [['Customer', report.organization], ['Period', `${report.startDate} to ${report.endDate}`], [], ['Pattern', 'Ticket count', 'Previous period', 'Change', 'Example ticket']];
-    for (const group of report.groups) rows.push([group.theme, group.count, group.previousCount, group.changePercent === null ? 'New' : `${group.changePercent}%`, group.tickets[0]?.key || '']);
+    const rows = [['Customer', report.organization], ['Period', `${report.startDate} to ${report.endDate}`]];
+    if (ai?.overview) rows.push(['AI overview', ai.overview]);
+    rows.push([], ['Pattern', 'AI name', 'Ticket count', 'Previous period', 'Change', 'Example ticket']);
+    report.groups.forEach((group, index) => rows.push([group.theme, aiPattern(index)?.title || '', group.count, group.previousCount, group.changePercent === null ? 'New' : `${group.changePercent}%`, group.tickets[0]?.key || '']));
     rows.push([], ['Date bucket', 'Tickets']);
     for (const point of report.timeSeries) rows.push([point.date, point.count]);
     const csv = rows.map((r) => r.map((cell) => `"${String(cell ?? '').replaceAll('"', '""')}"`).join(',')).join('\n');
@@ -136,6 +152,24 @@ function App() {
         <Kpi icon="✓" kind="success" label="Tickets analysed" value={report.analyzedCount.toLocaleString()} hint={report.sampled ? 'sample spread across the period' : 'rule-based text matching'} />
       </div>
 
+      {report.groups.length > 0 && <Card
+        title="AI summary"
+        description="Atlassian-hosted Claude. Ticket text stays on the Atlassian platform."
+        actions={<Button appearance={ai ? 'default' : 'primary'} small onClick={runAi} disabled={aiLoading}>{aiLoading ? 'Summarising…' : ai ? 'Regenerate' : 'Summarise with AI'}</Button>}
+        footer={ai && <span className="nq-muted">AI-generated from the pattern names, counts and example summaries above. Check the linked tickets before sharing.</span>}
+      >
+        {aiError && <Notice kind="error" title="The AI summary didn’t work.">{aiError}</Notice>}
+        {aiLoading && <Loading inline text="Reading the patterns and writing a summary…" />}
+        {!ai && !aiLoading && !aiError && <p className="nq-muted">Get plain-English names for the top patterns, an overview for a customer review and suggested follow-ups.</p>}
+        {ai && !aiLoading && <div className="nq-stack">
+          {ai.overview && <p className="ci-ai__overview">{ai.overview}</p>}
+          {ai.actions.length > 0 && <div>
+            <strong>Suggested follow-ups</strong>
+            <ul className="ci-ai__actions">{ai.actions.map((action) => <li key={action}>{action}</li>)}</ul>
+          </div>}
+        </div>}
+      </Card>}
+
       <div className="nq-grid ci-split">
         <Card title="Ticket activity" description="Volume over time" actions={<span className="nq-pill nq-pill--neutral">{report.startDate} – {report.endDate}</span>}>
           {report.timeSeries.length
@@ -153,9 +187,9 @@ function App() {
 
         <Card title="What stands out" description="Quick read" footer={<span className="nq-muted">Patterns are based on matching ticket text. Review the examples before drawing conclusions.</span>}>
           {report.groups.length
-            ? <ol className="ci-insights">{report.groups.slice(0, 3).map((g) => <li key={g.id}>
+            ? <ol className="ci-insights">{report.groups.slice(0, 3).map((g, index) => <li key={g.id}>
               <div>
-                <strong>{g.theme}</strong>
+                <strong>{patternName(g, index)}</strong>
                 <p className="nq-muted">{g.estimated ? '≈' : ''}{g.count} related tickets{g.previousCount ? `, ${g.change >= 0 ? 'up' : 'down'} ${Math.abs(g.change)} from the previous period` : ', newly recurring this period'}</p>
               </div>
               <span className="ci-insights__count">{g.estimated ? '≈' : ''}{g.count}</span>
@@ -176,10 +210,13 @@ function App() {
           The analysis stopped fetching early to stay within Jira’s time limit, so the sample is smaller than usual. Try a shorter period or a project filter.
         </Notice>}
         {report.groups.length
-          ? <div className="ci-patterns">{report.groups.map((group) => <details className="ci-pattern" key={group.id}>
+          ? <div className="ci-patterns">{report.groups.map((group, index) => <details className="ci-pattern" key={group.id}>
             <summary>
-              <strong className="ci-pattern__title">{group.theme}</strong>
-              <span className="ci-pattern__sample nq-muted">{group.sampleSummary}</span>
+              <span className="ci-pattern__title">
+                <strong>{patternName(group, index)}</strong>
+                {aiPattern(index) && <small className="nq-muted"> {group.theme}{aiPattern(index).coherent ? '' : ' · '}{!aiPattern(index).coherent && <Lozenge kind="warning">Mixed</Lozenge>}</small>}
+              </span>
+              <span className="ci-pattern__sample nq-muted">{aiPattern(index)?.summary || group.sampleSummary}</span>
               <span className="ci-meter"><i style={{ width: `${Math.max(8, (group.count / maxGroup) * 100)}%` }} /></span>
               <span className="ci-pattern__count" title={group.estimated ? `${group.sampleCount} in the sample` : undefined}>{group.estimated ? '≈' : ''}{group.count}</span>
               <TrendLozenge group={group} />

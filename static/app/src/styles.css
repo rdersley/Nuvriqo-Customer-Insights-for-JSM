@@ -42,6 +42,12 @@
 
 .ci-method { flex-wrap: wrap; }
 
+/* AI summary */
+.ci-ai__overview { margin: 0; color: var(--nq-text); line-height: var(--nq-line-height); }
+.ci-ai__actions { margin: var(--nq-space-050) 0 0; padding-left: var(--nq-space-250); color: var(--nq-text); }
+.ci-ai__actions li + li { margin-top: var(--nq-space-050); }
+.ci-pattern__title small { display: block; margin-top: 2px; }
+
 @media (max-width: 900px) {
   .ci-split { grid-template-columns: minmax(0, 1fr); }
   .ci-pattern summary { grid-template-columns: 1fr 36px 64px 12px; }
