@@ -21,6 +21,8 @@ permissions:
   scopes:
     - read:jira-work
     - read:servicedesk-request
+    # GET /rest/servicedeskapi/organization (organisation picker)
+    - read:organization:jira-service-management
   content:
     styles:
       - unsafe-inline

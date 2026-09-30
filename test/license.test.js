@@ -21,6 +21,14 @@ test('production ignores LICENSE_OVERRIDE', () => {
   assert.equal(licenseAllows(prod(undefined), { LICENSE_OVERRIDE: 'active' }), false);
 });
 
+test('production evaluation sites need no licence object, but an inactive licence still wins', () => {
+  const env = { EVALUATION_CLOUD_IDS: ' ABC-123 , def-456' };
+  assert.equal(licenseAllows({ ...prod(undefined), cloudId: 'abc-123' }, env), true);
+  assert.equal(licenseAllows({ ...prod(undefined), cloudId: 'zzz-999' }, env), false);
+  assert.equal(licenseAllows(prod(undefined), env), false);
+  assert.equal(licenseAllows({ ...prod({ active: false }), cloudId: 'abc-123' }, env), false);
+});
+
 test('non-production allows a missing licence but honours simulated ones', () => {
   assert.equal(licenseAllows(dev(undefined), {}), true);
   assert.equal(licenseAllows(dev({ active: false }), {}), false);

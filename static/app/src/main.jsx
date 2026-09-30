@@ -130,10 +130,10 @@ function App() {
 
     {report && <>
       <div className="nq-kpis">
-        <Kpi icon="▤" label={report.retrievalCapped ? 'Current period sample' : 'Tickets in period'} value={report.currentCount.toLocaleString()} hint={`for ${report.organization}`} />
+        <Kpi icon="▤" label="Tickets in period" value={report.currentCount.toLocaleString()} hint={`for ${report.organization}`} />
         <Kpi icon="↗" kind={report.change > 0 ? 'warning' : report.change < 0 ? 'success' : 'info'} label="Vs previous period" value={totalChange} hint={`${signed(report.change)} tickets · previous ${report.previousCount}`} />
         <Kpi icon="⌘" kind="warning" label="Recurring patterns" value={report.groups.length} hint="with at least 2 related tickets" />
-        <Kpi icon="✓" kind="success" label="Tickets analysed" value={report.analyzedCount.toLocaleString()} hint="rule-based text matching" />
+        <Kpi icon="✓" kind="success" label="Tickets analysed" value={report.analyzedCount.toLocaleString()} hint={report.sampled ? 'sample spread across the period' : 'rule-based text matching'} />
       </div>
 
       <div className="nq-grid ci-split">
@@ -156,9 +156,9 @@ function App() {
             ? <ol className="ci-insights">{report.groups.slice(0, 3).map((g) => <li key={g.id}>
               <div>
                 <strong>{g.theme}</strong>
-                <p className="nq-muted">{g.count} related tickets{g.previousCount ? `, ${g.change >= 0 ? 'up' : 'down'} ${Math.abs(g.change)} from the previous period` : ', newly recurring this period'}</p>
+                <p className="nq-muted">{g.estimated ? '≈' : ''}{g.count} related tickets{g.previousCount ? `, ${g.change >= 0 ? 'up' : 'down'} ${Math.abs(g.change)} from the previous period` : ', newly recurring this period'}</p>
               </div>
-              <span className="ci-insights__count">{g.count}</span>
+              <span className="ci-insights__count">{g.estimated ? '≈' : ''}{g.count}</span>
             </li>)}</ol>
             : <EmptyState compact title="No repeated patterns found in these tickets yet." />}
         </Card>
@@ -169,9 +169,11 @@ function App() {
         description="Repeated customer issues, with ticket evidence"
         footer={<span className="nq-muted">Similarity groups use ticket summaries and descriptions. They are clues for review, not confirmed root causes.</span>}
       >
-        {(report.capped || report.retrievalCapped) && <Notice kind="warning">
-          {report.retrievalCapped ? `The search reached the ${report.totalFetched.toLocaleString()}-ticket retrieval limit, so counts are based on the fetched sample. ` : ''}
-          {report.capped ? 'Pattern matching examines up to 900 tickets per period.' : ''}
+        {report.sampled && <Notice>
+          Patterns come from {report.analyzedCount.toLocaleString()} of {report.currentCount.toLocaleString()} tickets, sampled evenly across the period. Sizes marked ≈ are estimates; ticket totals, the comparison and the chart are exact.
+        </Notice>}
+        {report.cutShort && <Notice kind="warning">
+          The analysis stopped fetching early to stay within Jira’s time limit, so the sample is smaller than usual. Try a shorter period or a project filter.
         </Notice>}
         {report.groups.length
           ? <div className="ci-patterns">{report.groups.map((group) => <details className="ci-pattern" key={group.id}>
@@ -179,7 +181,7 @@ function App() {
               <strong className="ci-pattern__title">{group.theme}</strong>
               <span className="ci-pattern__sample nq-muted">{group.sampleSummary}</span>
               <span className="ci-meter"><i style={{ width: `${Math.max(8, (group.count / maxGroup) * 100)}%` }} /></span>
-              <span className="ci-pattern__count">{group.count}</span>
+              <span className="ci-pattern__count" title={group.estimated ? `${group.sampleCount} in the sample` : undefined}>{group.estimated ? '≈' : ''}{group.count}</span>
               <TrendLozenge group={group} />
               <span className="ci-pattern__chevron" aria-hidden="true">›</span>
             </summary>
