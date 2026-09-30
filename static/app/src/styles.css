@@ -42,6 +42,21 @@
 
 .ci-method { flex-wrap: wrap; }
 
+/* Full analysis */
+.ci-full { flex-wrap: wrap; }
+.ci-progress { display: flex; flex-direction: column; gap: var(--nq-space-100); padding: var(--nq-space-150); border: 1px solid var(--nq-border); border-radius: var(--nq-radius-md); background: var(--nq-surface-sunken); }
+.ci-progress__bar { height: 8px; }
+.ci-progress__bar i { transition: width 0.3s ease; }
+
+/* Portal report editor */
+.ci-draft { display: flex; flex-direction: column; gap: var(--nq-space-100); }
+.ci-draft__row { display: grid; grid-template-columns: 20px minmax(0, 1fr) minmax(0, 1.6fr) 56px; gap: var(--nq-space-100); align-items: center; }
+.ci-draft__row > span { text-align: right; }
+@media (max-width: 900px) {
+  .ci-draft__row { grid-template-columns: 20px minmax(0, 1fr) 56px; }
+  .ci-draft__row input[aria-label="Issue description"] { grid-column: 2 / 4; }
+}
+
 /* AI summary */
 .ci-ai__overview { margin: 0; color: var(--nq-text); line-height: var(--nq-line-height); }
 .ci-ai__actions { margin: var(--nq-space-050) 0 0; padding-left: var(--nq-space-250); color: var(--nq-text); }

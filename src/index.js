@@ -1,13 +1,25 @@
 import ResolverModule from '@forge/resolver';
 import { asUser, route } from '@forge/api';
-import { buildReport, chartBuckets } from './analysis.js';
+import { buildReport, chartBuckets, textOf } from './analysis.js';
 import { licenseAllows, UNLICENSED_MESSAGE } from './license.js';
-import { summarise } from './ai.js';
+import { suggestMerges, summarise } from './ai.js';
+import { snapshotFrom } from './publish.js';
+import { deleteReport, loadReport, saveReport } from './storage.js';
 
 // This package is "type": "module"; Forge's bundler then hands CommonJS packages
 // over as their exports object, so the class sits on `.default`.
 const Resolver = ResolverModule.default ?? ResolverModule;
 const resolver = new Resolver();
+
+// Agent-only. Portal customers use src/portal.js; this also refuses them here
+// in case a module is ever pointed at the wrong function.
+function define(name, fn) {
+  resolver.define(name, (request) => {
+    const type = request?.context?.accountType;
+    if (type && type !== 'licensed') throw new Error('Customer Insights is only available to agents.');
+    return fn(request);
+  });
+}
 const PERIOD_SAMPLE = 900; // most tickets analysed per period (groupIssues' cap)
 const SAMPLE_SLICES = 9;
 const CONCURRENCY = 6;
@@ -65,7 +77,7 @@ async function readJson(response, label) {
 }
 
 // Unlicensed installs get the flag and nothing else, so the page can explain why.
-resolver.define('getOrganizations', async ({ context }) => {
+define('getOrganizations', async ({ context }) => {
   if (!licenseAllows(context)) return { licensed: false, organizations: [] };
   const organizations = [];
   let start = 0;
@@ -83,24 +95,74 @@ function escapeJql(value) {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
-resolver.define('analyze', async ({ payload, context }) => {
-  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Validates an analysis request and builds its JQL. Shared by analyze and fetchTickets. */
+function parseQuery(payload) {
   const { organization, startDate, endDate, projects = [] } = payload || {};
-  if (!organization?.name || !/^\d{4}-\d{2}-\d{2}$/.test(startDate || '') || !/^\d{4}-\d{2}-\d{2}$/.test(endDate || '')) {
+  if (!organization?.name || !ISO_DATE.test(startDate || '') || !ISO_DATE.test(endDate || '')) {
     throw new Error('Choose an organization and valid start and end dates.');
   }
   if (Number.isNaN(Date.parse(startDate)) || Number.isNaN(Date.parse(endDate))) throw new Error('Choose valid calendar dates.');
   if (startDate > endDate) throw new Error('Start date must be on or before end date.');
-  const span = (Date.parse(endDate) - Date.parse(startDate)) / 86400000;
+  const span = (Date.parse(endDate) - Date.parse(startDate)) / DAY;
   if (span > 365) throw new Error('Choose a period of 365 days or less for this first version.');
   const requestedProjects = Array.isArray(projects) ? projects : [];
   const cleanProjects = [...new Set(requestedProjects.map((key) => String(key).trim().toUpperCase()).filter((key) => /^[A-Z][A-Z0-9_]{0,49}$/.test(key)))];
   if (requestedProjects.length && !cleanProjects.length) throw new Error('Enter one or more valid Jira project keys, such as SD or HW.');
   const projectClause = cleanProjects.length ? ` AND project in (${cleanProjects.map((key) => `'${key}'`).join(', ')})` : '';
   const fullSpan = Math.max(1, span + 1);
-  const previousStart = new Date(Date.parse(`${startDate}T00:00:00Z`) - fullSpan * 86400000).toISOString().slice(0, 10);
-  const endExclusive = new Date(Date.parse(`${endDate}T00:00:00Z`) + 86400000).toISOString().slice(0, 10);
-  const between = (from, toExclusive) => `organizations = "${escapeJql(organization.name)}" AND created >= "${from}" AND created < "${toExclusive}"${projectClause}`;
+  return {
+    organization,
+    startDate,
+    endDate,
+    cleanProjects,
+    previousStart: new Date(Date.parse(`${startDate}T00:00:00Z`) - fullSpan * DAY).toISOString().slice(0, 10),
+    endExclusive: new Date(Date.parse(`${endDate}T00:00:00Z`) + DAY).toISOString().slice(0, 10),
+    between: (from, toExclusive) => `organizations = "${escapeJql(organization.name)}" AND created >= "${from}" AND created < "${toExclusive}"${projectClause}`,
+  };
+}
+
+// Full analysis: the page pages through every ticket in date slices and groups
+// them itself (see static/app/src/fullAnalysis.js). Each call reads Jira as the
+// user, stays well inside the 25s limit, and returns only what grouping needs.
+const FULL_PAGES_PER_CALL = 5;
+const FULL_CALL_BUDGET_MS = 12000;
+const DESCRIPTION_CHARS = 600;
+
+define('fetchTickets', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  const query = parseQuery(payload);
+  const { from, toExclusive } = payload;
+  if (!ISO_DATE.test(from || '') || !ISO_DATE.test(toExclusive || '') || from < query.previousStart || toExclusive > query.endExclusive || from >= toExclusive) {
+    throw new Error('Invalid ticket range.');
+  }
+  const deadline = Date.now() + FULL_CALL_BUDGET_MS;
+  const tickets = [];
+  let token = typeof payload.nextPageToken === 'string' ? payload.nextPageToken : undefined;
+  for (let page = 0; page < FULL_PAGES_PER_CALL; page += 1) {
+    const result = await searchPage(query.between(from, toExclusive), 100, token);
+    for (const issue of result.issues) {
+      tickets.push({
+        key: issue.key,
+        self: issue.self,
+        fields: {
+          summary: issue.fields?.summary || '',
+          description: textOf(issue.fields?.description).join(' ').slice(0, DESCRIPTION_CHARS),
+          created: issue.fields?.created,
+          status: { name: issue.fields?.status?.name || 'Unknown' },
+        },
+      });
+    }
+    token = result.nextPageToken;
+    if (!token || Date.now() > deadline) break;
+  }
+  return { tickets, nextPageToken: token || null };
+});
+
+define('analyze', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  const { organization, startDate, endDate, cleanProjects, previousStart, endExclusive, between } = parseQuery(payload);
   // Resolvers are killed at 25s; stop starting new fetches after the budget.
   const startedAt = Date.now();
   const deadline = startedAt + FETCH_BUDGET_MS;
@@ -148,17 +210,67 @@ resolver.define('analyze', async ({ payload, context }) => {
   const issues = [...currentIssues, ...previousIssues];
   const report = buildReport(issues, startDate, endDate, { current: currentTotal, previous: previousTotal, timeSeries });
   console.log(`analyze: ${currentTotal}+${previousTotal} tickets, ${issues.length} fetched in ${Date.now() - startedAt}ms`);
-  return { ...report, organization: organization.name, startDate, endDate, projectCount: cleanProjects.length || null, totalFetched: issues.length, cutShort };
+  return { ...report, organization: organization.name, startDate, endDate, previousStart, endExclusive, projectCount: cleanProjects.length || null, totalFetched: issues.length, cutShort };
 });
 
 // Opt-in, separate from analyze so it gets its own time limit. The report comes
 // from this user's own analysis in the page; aiInput() bounds what is sent.
-resolver.define('aiSummary', async ({ payload, context }) => {
+// Step 1 of the AI summary: which rule-based groups are the same issue. Only
+// indexes and titles come back; counts are added up by applyMerges().
+define('aiMerge', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  const startedAt = Date.now();
+  const result = await suggestMerges(payload?.report || {});
+  console.log(`aiMerge: ${result.model}, ${result.merges.length} merged issues in ${Date.now() - startedAt}ms`);
+  return result;
+});
+
+define('aiSummary', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
   const startedAt = Date.now();
   const result = await summarise(payload?.report || {});
   console.log(`aiSummary: ${result.model}, ${result.patterns.length} patterns in ${Date.now() - startedAt}ms`);
   return result;
+});
+
+// Publishing to the customer portal. Jira admins and project admins only.
+async function canPublish() {
+  const response = await asUser().requestJira(route`/rest/api/3/mypermissions?permissions=ADMINISTER,ADMINISTER_PROJECTS`, { headers: { Accept: 'application/json' } });
+  const data = await readJson(response, 'Permission check');
+  return Boolean(data.permissions?.ADMINISTER?.havePermission || data.permissions?.ADMINISTER_PROJECTS?.havePermission);
+}
+
+/** The organisation as this agent can see it; refuses ids they can't. */
+async function visibleOrganisation(orgId) {
+  if (!/^\d{1,18}$/.test(String(orgId))) throw new Error('Invalid organisation.');
+  const response = await asUser().requestJira(route`/rest/servicedeskapi/organization/${String(orgId)}`, { headers: { Accept: 'application/json' } });
+  const data = await readJson(response, 'Organization lookup');
+  return { id: String(data.id), name: data.name };
+}
+
+define('getPublication', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  const organization = await visibleOrganisation(payload?.orgId);
+  const [allowed, published] = await Promise.all([canPublish(), loadReport(organization.id)]);
+  return { canPublish: allowed, published };
+});
+
+define('publishReport', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  if (!(await canPublish())) throw new Error('Only Jira admins and project admins can publish to the portal.');
+  const organization = await visibleOrganisation(payload?.snapshot?.organization?.id);
+  const snapshot = snapshotFrom({ ...payload.snapshot, organization }, { publishedBy: context?.accountId });
+  await saveReport(snapshot);
+  console.log(`publishReport: org ${organization.id}, ${snapshot.patterns.length} patterns`);
+  return snapshot;
+});
+
+define('unpublishReport', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  if (!(await canPublish())) throw new Error('Only Jira admins and project admins can remove portal reports.');
+  const organization = await visibleOrganisation(payload?.orgId);
+  await deleteReport(organization.id);
+  return { removed: true };
 });
 
 export const handler = resolver.getDefinitions();
