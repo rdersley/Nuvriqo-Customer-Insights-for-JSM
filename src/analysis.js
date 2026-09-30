@@ -24,17 +24,49 @@ export function problemText(summary) {
   return segments.filter((s, i) => i === segments.length - 1 || !CODE_SEGMENT.test(s)).join(' ');
 }
 
-function words(text) {
-  const norm = text.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
-  return [...new Set((norm.match(/[a-z0-9]{3,}/g) || []).filter((w) => !STOP.has(w) && !GENERIC.has(w)))];
+function rawWords(text) {
+  return text.normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase().match(/[a-z0-9]{3,}/g) || [];
+}
+
+/** Light English stemmer: crash / crashes / crashing, charge / charging. */
+export function stem(word) {
+  let s = word;
+  if (s.length > 5 && s.endsWith('ing')) s = s.slice(0, -3);
+  else if (s.length > 4 && s.endsWith('ed')) s = s.slice(0, -2);
+  else if (s.length > 4 && /(sh|ch|x|ss)es$/.test(s)) s = s.slice(0, -2);
+  else if (s.length > 3 && s.endsWith('s') && !s.endsWith('ss')) s = s.slice(0, -1);
+  if (s.length > 4 && s.endsWith('e')) s = s.slice(0, -1);
+  return s;
+}
+
+const meaningful = (w) => !STOP.has(w) && !GENERIC.has(w);
+
+/** stem -> the word as first written, so themes read naturally. */
+function terms(words) {
+  const out = new Map();
+  for (const w of words) if (meaningful(w) && !out.has(stem(w))) out.set(stem(w), w);
+  return out;
 }
 
 export function tokenize(issue) {
   const summary = issue.fields?.summary || issue.summary || '';
+  const words = rawWords(problemText(summary));
+  const surface = terms(words);
+  // "pin pad" also yields "pinpad", so it matches tickets that spell it as one word.
+  const compounds = new Map();
+  for (let i = 0; i + 1 < words.length; i += 1) {
+    const [a, b] = [words[i], words[i + 1]];
+    const key = stem(a + b);
+    if (meaningful(a) && meaningful(b) && !surface.has(key)) compounds.set(key, [stem(a), stem(b)]);
+  }
+  compounds.forEach((_, key) => surface.set(key, key));
+  // Resolved against the whole batch in vectorise().
   return {
     summary,
-    summaryWords: words(problemText(summary)),
-    descriptionWords: words(textOf(issue.fields?.description ?? issue.description).join(' ')),
+    summaryWords: [...surface.keys()],
+    surface,
+    compounds,
+    descriptionWords: [...terms(rawWords(textOf(issue.fields?.description ?? issue.description).join(' '))).keys()],
   };
 }
 
@@ -48,6 +80,27 @@ const MAX_SHARE = 0.5;
  * as description words.
  */
 function vectorise(rows) {
+  // Keep a joined pair ("pinpad" from "pin pad") only when another ticket uses
+  // it as one word; then it replaces its parts so both spellings match.
+  const realWords = new Set();
+  for (const { tokenized } of rows) {
+    tokenized.summaryWords.forEach((w) => { if (!tokenized.compounds.has(w)) realWords.add(w); });
+    tokenized.descriptionWords.forEach((w) => realWords.add(w));
+  }
+  for (const { tokenized } of rows) {
+    for (const [key, parts] of tokenized.compounds) {
+      if (!realWords.has(key)) {
+        tokenized.summaryWords = tokenized.summaryWords.filter((w) => w !== key);
+        tokenized.compounds.delete(key);
+        continue;
+      }
+      tokenized.summaryWords = tokenized.summaryWords.filter((w) => !parts.includes(w));
+      if (parts.every((p) => tokenized.descriptionWords.includes(p))) {
+        tokenized.descriptionWords = [...tokenized.descriptionWords.filter((w) => !parts.includes(w)), key];
+      }
+      tokenized.surface.set(key, parts.map((p) => tokenized.surface.get(p) || p).join(' '));
+    }
+  }
   const df = new Map();
   for (const { tokenized } of rows) {
     for (const word of new Set([...tokenized.summaryWords, ...tokenized.descriptionWords])) df.set(word, (df.get(word) || 0) + 1);
@@ -95,9 +148,10 @@ function cosineToCluster(row, cluster) {
 function themeName(members, representative) {
   const counts = new Map();
   for (const { tokenized } of members) tokenized.summaryWords.forEach((w) => counts.set(w, (counts.get(w) || 0) + 1));
+  const { surface } = representative.tokenized;
   let shared = representative.tokenized.summaryWords.filter((w) => counts.get(w) * 2 > members.length);
   if (!shared.length) shared = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([w]) => w);
-  const text = shared.slice(0, 4).join(' ');
+  const text = [...new Set(shared.slice(0, 4).map((w) => surface.get(w) || w))].join(' ');
   return text ? text[0].toUpperCase() + text.slice(1) : 'Similar requests';
 }
 
@@ -152,7 +206,33 @@ export function groupIssues(issues, threshold = 0.4) {
     .sort((a, b) => b.count - a.count);
 }
 
-export function buildReport(issues, periodStart, periodEnd) {
+const DAY = 86400000;
+const isoDay = (ms) => new Date(ms).toISOString().slice(0, 10);
+
+/**
+ * Chart buckets for a period: days up to 35 days, otherwise weeks starting on
+ * Monday. `from`/`toExclusive` are clipped to the period so they can be used
+ * directly in a JQL count.
+ */
+export function chartBuckets(periodStart, periodEnd) {
+  const start = Date.parse(`${periodStart}T00:00:00Z`);
+  const endExclusive = Date.parse(`${periodEnd}T00:00:00Z`) + DAY;
+  const daily = (endExclusive - start) / DAY <= 35;
+  let cursor = start;
+  if (!daily) cursor -= ((new Date(start).getUTCDay() + 6) % 7) * DAY;
+  const buckets = [];
+  for (; cursor < endExclusive; cursor += daily ? DAY : 7 * DAY) {
+    buckets.push({ date: isoDay(cursor), from: isoDay(Math.max(cursor, start)), toExclusive: isoDay(Math.min(cursor + (daily ? DAY : 7 * DAY), endExclusive)) });
+  }
+  return buckets;
+}
+
+/**
+ * `totals` (optional) carries exact Jira counts when `issues` is only a sample:
+ * { current, previous, timeSeries }. Pattern counts are then scaled from the
+ * sample to the period total and flagged as estimates.
+ */
+export function buildReport(issues, periodStart, periodEnd, totals = null) {
   const from = Date.parse(periodStart);
   const to = Date.parse(periodEnd + 'T23:59:59Z');
   const duration = Math.max(1, to - from);
@@ -164,8 +244,13 @@ export function buildReport(issues, periodStart, periodEnd) {
     const t = Date.parse(issue.fields.created);
     return t >= from - duration && t < from;
   });
-  const currentGroups = groupIssues(current);
-  const previousGroups = groupIssues(previous);
+  const currentCount = totals ? totals.current : current.length;
+  const previousCount = totals ? totals.previous : previous.length;
+  const currentScale = current.length ? Math.max(1, currentCount / current.length) : 1;
+  const previousScale = previous.length ? Math.max(1, previousCount / previous.length) : 1;
+  const scaled = (groups, scale) => groups.map((g) => ({ ...g, sampleCount: g.count, count: Math.round(g.count * scale), estimated: scale > 1 }));
+  const currentGroups = scaled(groupIssues(current), currentScale);
+  const previousGroups = scaled(groupIssues(previous), previousScale);
   const oldCounts = new Map();
   const normalizedWords = (theme) => new Set(theme.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
   const trends = currentGroups.map((group) => {
@@ -186,41 +271,26 @@ export function buildReport(issues, periodStart, periodEnd) {
     }
     return { ...group, previousCount: prior, change: group.count - prior, changePercent: prior ? Math.round(((group.count - prior) / prior) * 100) : null };
   });
-  const buckets = new Map();
-  const rangeDays = duration / 86400000;
-  const bucketFor = (date) => {
-    const d = new Date(date);
-    if (rangeDays <= 35) return d.toISOString().slice(0, 10);
-    const monday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
-    monday.setUTCDate(monday.getUTCDate() - ((monday.getUTCDay() + 6) % 7));
-    return monday.toISOString().slice(0, 10);
-  };
-  for (const issue of current) {
-    const key = bucketFor(issue.fields.created);
-    buckets.set(key, (buckets.get(key) || 0) + 1);
-  }
-  if (rangeDays <= 35) {
-    for (let day = 0; day <= Math.floor((Date.parse(periodEnd) - Date.parse(periodStart)) / 86400000); day += 1) {
-      const date = new Date(from + day * 86400000).toISOString().slice(0, 10);
-      if (!buckets.has(date)) buckets.set(date, 0);
+  let timeSeries = totals?.timeSeries;
+  if (!timeSeries) {
+    const buckets = chartBuckets(periodStart, periodEnd);
+    const counts = new Map(buckets.map((b) => [b.date, 0]));
+    for (const issue of current) {
+      const day = isoDay(Date.parse(issue.fields.created));
+      const bucket = buckets.findLast((b) => b.date <= day);
+      if (bucket) counts.set(bucket.date, counts.get(bucket.date) + 1);
     }
-  } else {
-    const cursor = new Date(bucketFor(periodStart));
-    const last = new Date(bucketFor(periodEnd));
-    while (cursor <= last) {
-      const date = cursor.toISOString().slice(0, 10);
-      if (!buckets.has(date)) buckets.set(date, 0);
-      cursor.setUTCDate(cursor.getUTCDate() + 7);
-    }
+    timeSeries = [...counts].map(([date, count]) => ({ date, count }));
   }
   return {
-    currentCount: current.length,
-    previousCount: previous.length,
-    change: current.length - previous.length,
-    changePercent: previous.length ? Math.round(((current.length - previous.length) / previous.length) * 100) : null,
+    currentCount,
+    previousCount,
+    change: currentCount - previousCount,
+    changePercent: previousCount ? Math.round(((currentCount - previousCount) / previousCount) * 100) : null,
     groups: trends,
-    timeSeries: [...buckets.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, count]) => ({ date, count })),
+    timeSeries,
     analyzedCount: Math.min(current.length, 900),
+    sampled: currentScale > 1 || previousScale > 1,
     capped: current.length > 900 || previous.length > 900,
   };
 }
