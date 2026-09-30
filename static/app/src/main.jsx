@@ -7,6 +7,7 @@ import { AppHeader, Button, Card, EmptyState, Field, Footer, Kpi, Loading, Lozen
 import { version } from '../../../package.json';
 import { localIso, matchPreset, presetRange, PRESETS } from '../../../src/dates.js';
 import { analyseEveryTicket, Cancelled, FULL_LIMIT } from './fullAnalysis.js';
+import { applyMerges } from '../../../src/analysis.js';
 import './styles.css';
 
 enableTheme(view);
@@ -48,6 +49,9 @@ function App() {
   const [ai, setAi] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState('');
+  const [aiStep, setAiStep] = useState('');
+  // After "Summarise with AI", patterns are the AI-merged list; before, the rule-based one.
+  const groups = ai?.groups || report?.groups || [];
 
   useEffect(() => {
     invoke('getOrganizations').then((result) => {
@@ -108,7 +112,7 @@ function App() {
   function prepareDraft() {
     setPublishError('');
     setDraft({
-      patterns: report.groups.slice(0, 12).map((g, index) => ({
+      patterns: groups.slice(0, 12).map((g, index) => ({
         include: index < 8 && aiPattern(index)?.coherent !== false,
         title: aiPattern(index)?.title || g.theme,
         summary: aiPattern(index)?.summary || '',
@@ -156,14 +160,28 @@ function App() {
     if (range) { setFrom(range.from); setTo(range.to); }
   }
 
+  // Two calls, each inside Forge's 25s limit: merge same-issue groups, then name and summarise.
   async function runAi() {
     setAiLoading(true); setAiError('');
-    try { setAi(await invoke('aiSummary', { report })); }
-    catch (e) { setAiError(e.message || 'The AI summary could not be created.'); }
-    finally { setAiLoading(false); }
+    try {
+      setAiStep('merge');
+      let merged = report.groups;
+      let mergedIssues = 0;
+      try {
+        const { merges } = await invoke('aiMerge', { report });
+        merged = applyMerges(report.groups, merges);
+        mergedIssues = merges.filter((m) => m.members.length > 1).length;
+      } catch (e) {
+        setAiError(`Similar patterns couldn’t be merged (${e.message || 'AI error'}); the summary uses the patterns as found.`);
+      }
+      setAiStep('summary');
+      const summary = await invoke('aiSummary', { report: { ...report, groups: merged } });
+      setAi({ ...summary, groups: merged, mergedIssues, mergedGroups: report.groups.length - merged.length });
+    } catch (e) { setAiError(e.message || 'The AI summary could not be created.'); }
+    finally { setAiLoading(false); setAiStep(''); }
   }
 
-  // AI names apply to the first patterns only (aiInput sends 12); the index is the report order.
+  // AI names apply to the first merged patterns (aiInput sends 12); the index is the merged order.
   const aiPattern = (index) => ai?.patterns.find((p) => p.index === index);
   const patternName = (group, index) => aiPattern(index)?.title || group.theme;
 
@@ -172,7 +190,7 @@ function App() {
     const rows = [['Customer', report.organization], ['Period', `${report.startDate} to ${report.endDate}`]];
     if (ai?.overview) rows.push(['AI overview', ai.overview]);
     rows.push([], ['Pattern', 'AI name', 'Ticket count', 'Previous period', 'Change', 'Example ticket']);
-    report.groups.forEach((group, index) => rows.push([group.theme, aiPattern(index)?.title || '', group.count, group.previousCount, group.changePercent === null ? 'New' : `${group.changePercent}%`, group.tickets[0]?.key || '']));
+    groups.forEach((group, index) => rows.push([group.theme, aiPattern(index)?.title || '', group.count, group.previousCount, group.changePercent === null ? 'New' : `${group.changePercent}%`, group.tickets[0]?.key || '']));
     rows.push([], ['Date bucket', 'Tickets']);
     for (const point of report.timeSeries) rows.push([point.date, point.count]);
     const csv = rows.map((r) => r.map((cell) => `"${String(cell ?? '').replaceAll('"', '""')}"`).join(',')).join('\n');
@@ -244,20 +262,21 @@ function App() {
       <div className="nq-kpis">
         <Kpi icon="▤" label="Tickets in period" value={report.currentCount.toLocaleString()} hint={`for ${report.organization}`} />
         <Kpi icon="↗" kind={report.change > 0 ? 'warning' : report.change < 0 ? 'success' : 'info'} label="Vs previous period" value={totalChange} hint={`${signed(report.change)} tickets · previous ${report.previousCount}`} />
-        <Kpi icon="⌘" kind="warning" label="Recurring patterns" value={report.groups.length} hint="with at least 2 related tickets" />
+        <Kpi icon="⌘" kind="warning" label="Recurring patterns" value={groups.length} hint="with at least 2 related tickets" />
         <Kpi icon="✓" kind="success" label="Tickets analysed" value={report.analyzedCount.toLocaleString()} hint={report.sampled ? 'sample spread across the period' : 'rule-based text matching'} />
       </div>
 
-      {report.groups.length > 0 && <Card
+      {groups.length > 0 && <Card
         title="AI summary"
         description="Atlassian-hosted Claude. Ticket text stays on the Atlassian platform."
         actions={<Button appearance={ai ? 'default' : 'primary'} small onClick={runAi} disabled={aiLoading}>{aiLoading ? 'Summarising…' : ai ? 'Regenerate' : 'Summarise with AI'}</Button>}
         footer={ai && <span className="nq-muted">AI-generated from the pattern names, counts and example summaries above. Check the linked tickets before sharing.</span>}
       >
         {aiError && <Notice kind="error" title="The AI summary didn’t work.">{aiError}</Notice>}
-        {aiLoading && <Loading inline text="Reading the patterns and writing a summary…" />}
+        {aiLoading && <Loading inline text={aiStep === 'merge' ? 'Finding patterns that are the same issue…' : 'Naming the issues and writing a summary…'} />}
         {!ai && !aiLoading && !aiError && <p className="nq-muted">Get plain-English names for the top patterns, an overview for a customer review and suggested follow-ups.</p>}
         {ai && !aiLoading && <div className="nq-stack">
+          {ai.mergedIssues > 0 && <p className="nq-muted">Combined {ai.mergedGroups + ai.mergedIssues} patterns that describe the same issue into {ai.mergedIssues}. Expand a pattern to see what it combines.</p>}
           {ai.overview && <p className="ci-ai__overview">{ai.overview}</p>}
           {ai.actions.length > 0 && <div>
             <strong>Suggested follow-ups</strong>
@@ -282,8 +301,8 @@ function App() {
         </Card>
 
         <Card title="What stands out" description="Quick read" footer={<span className="nq-muted">Patterns are based on matching ticket text. Review the examples before drawing conclusions.</span>}>
-          {report.groups.length
-            ? <ol className="ci-insights">{report.groups.slice(0, 3).map((g, index) => <li key={g.id}>
+          {groups.length
+            ? <ol className="ci-insights">{groups.slice(0, 3).map((g, index) => <li key={g.id}>
               <div>
                 <strong>{patternName(g, index)}</strong>
                 <p className="nq-muted">{g.estimated ? '≈' : ''}{g.count} related tickets{g.previousCount ? `, ${g.change >= 0 ? 'up' : 'down'} ${Math.abs(g.change)} from the previous period` : ', newly recurring this period'}</p>
@@ -295,7 +314,7 @@ function App() {
       </div>
 
       <Card
-        title={<>Issue patterns <span className="nq-pill nq-pill--neutral">{report.groups.length}</span></>}
+        title={<>Issue patterns <span className="nq-pill nq-pill--neutral">{groups.length}</span></>}
         description="Repeated customer issues, with ticket evidence"
         footer={<span className="nq-muted">Similarity groups use ticket summaries and descriptions. They are clues for review, not confirmed root causes.</span>}
       >
@@ -321,12 +340,15 @@ function App() {
         {report.cutShort && <Notice kind="warning">
           The analysis stopped fetching early to stay within Jira’s time limit, so the sample is smaller than usual. Try a shorter period or a project filter.
         </Notice>}
-        {report.groups.length
-          ? <div className="ci-patterns">{report.groups.map((group, index) => <details className="ci-pattern" key={group.id}>
+        {groups.length
+          ? <div className="ci-patterns">{groups.map((group, index) => <details className="ci-pattern" key={group.id}>
             <summary>
               <span className="ci-pattern__title">
                 <strong>{patternName(group, index)}</strong>
-                {aiPattern(index) && <small className="nq-muted"> {group.theme}{aiPattern(index).coherent ? '' : ' · '}{!aiPattern(index).coherent && <Lozenge kind="warning">Mixed</Lozenge>}</small>}
+                {(aiPattern(index) || group.ruleNames) && <small className="nq-muted">
+                  {group.mergedFrom ? `Combines ${group.mergedFrom.length}: ${group.mergedFrom.join(' · ')}` : (group.ruleNames?.[0] || group.theme)}
+                  {aiPattern(index)?.coherent === false && <> · <Lozenge kind="warning">Mixed</Lozenge></>}
+                </small>}
               </span>
               <span className="ci-pattern__sample nq-muted">{aiPattern(index)?.summary || group.sampleSummary}</span>
               <span className="ci-meter"><i style={{ width: `${Math.max(8, (group.count / maxGroup) * 100)}%` }} /></span>

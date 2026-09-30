@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildReport, chartBuckets, groupIssues } from '../src/analysis.js';
+import { buildReport, chartBuckets, groupIssues, tokenize } from '../src/analysis.js';
 
 function issue(key, summary, created, description = '') {
   return {
@@ -137,6 +137,28 @@ test('a pattern worded differently in each period still gets a trend', () => {
   assert.equal(stuck.count, 2);
   assert.equal(stuck.previousCount, 3);
   assert.equal(stuck.tickets.every((t) => ['SD-4', 'SD-5'].includes(t.key)), true);
+});
+
+test('code-only prefixes without spaces, // separators, dates and IDs are not problem words', () => {
+  const words = (summary) => tokenize({ fields: { summary } }).summaryWords;
+  assert.deepEqual(words('RYR-BOND-open barset'), ['open', 'barset', 'openbarset']);
+  assert.deepEqual(words('RYR - OPEN BARSET // LIS // 07.08'), ['open', 'barset', 'openbarset']);
+  assert.deepEqual(words('RYR - Reopen Barset - TNG Bond 19.07.2026'), ['reopen', 'barset', 'tng', 'bond', 'reopenbarset', 'barsettng', 'tngbond']);
+  assert.equal(words('RYR - VNO - BOND - Needs to unlock a barset no.DUB24150 in VNO').includes('dub24150'), false);
+  assert.deepEqual(words('RYR - P2P issue'), ['p2p']);
+});
+
+test('groups that end up with the same name are merged', () => {
+  const issues = [
+    issue('SD-1', 'RYR - BOH - BOND - OPEN BARSET', '2026-09-16T10:00:00Z'),
+    issue('SD-2', 'RYR - STN - BOND - OPEN BARSET', '2026-09-16T11:00:00Z'),
+    issue('SD-3', 'RYR - Open barset please', '2026-09-17T10:00:00Z'),
+    issue('SD-4', 'RYR - Open barset please now', '2026-09-17T11:00:00Z'),
+  ];
+  const report = buildReport(issues, '2026-09-16', '2026-09-22');
+  const open = report.groups.filter((g) => /^open barset$/i.test(g.theme));
+  assert.equal(open.length, 1);
+  assert.equal(open[0].count, 4);
 });
 
 test('handles Jira rich text descriptions', () => {
