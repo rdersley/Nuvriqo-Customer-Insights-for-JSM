@@ -5,9 +5,22 @@ modules:
       resolver:
         function: resolver
       title: Customer Insights
+  # Published reports for portal customers. Own function (src/portal.js) so
+  # customers can't reach the agent resolvers.
+  jiraServiceManagement:portalUserMenuAction:
+    - key: customer-insights-portal-report
+      title: Service report
+      resource: portal
+      resolver:
+        function: portal-resolver
+      viewportSize: large
+      unlicensedAccess:
+        - customer
   function:
     - key: resolver
       handler: index.handler
+    - key: portal-resolver
+      handler: portal.handler
   # Atlassian-hosted Claude for the opt-in AI summary (src/ai.js).
   llm:
     - key: insights-llm
@@ -16,6 +29,8 @@ modules:
 resources:
   - key: main
     path: static/app/build
+  - key: portal
+    path: static/portal/build
 app:
   runtime:
     name: nodejs22.x
@@ -28,6 +43,8 @@ permissions:
     - read:servicedesk-request
     # GET /rest/servicedeskapi/organization (organisation picker)
     - read:organization:jira-service-management
+    # Published portal reports (src/storage.js)
+    - storage:app
   content:
     styles:
       - unsafe-inline

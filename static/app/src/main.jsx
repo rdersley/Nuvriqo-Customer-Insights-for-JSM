@@ -7,6 +7,7 @@ import { AppHeader, Button, Card, EmptyState, Field, Footer, Kpi, Loading, Lozen
 import { version } from '../../../package.json';
 import { localIso, matchPreset, presetRange, PRESETS } from '../../../src/dates.js';
 import { analyseEveryTicket, Cancelled, FULL_LIMIT } from './fullAnalysis.js';
+import { applyMerges } from '../../../src/analysis.js';
 import './styles.css';
 
 enableTheme(view);
@@ -32,6 +33,10 @@ function App() {
   const [fullRun, setFullRun] = useState(null); // { fetched, total, phase } while running
   const [fullError, setFullError] = useState('');
   const cancelFull = useRef(false);
+  const [publication, setPublication] = useState(null); // { canPublish, published } for the report's organisation
+  const [draft, setDraft] = useState(null);
+  const [publishing, setPublishing] = useState(false);
+  const [publishError, setPublishError] = useState('');
   const preset = matchPreset(from, to);
   const today = localIso(new Date());
   const [projectsText, setProjectsText] = useState('');
@@ -44,6 +49,9 @@ function App() {
   const [ai, setAi] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState('');
+  const [aiStep, setAiStep] = useState('');
+  // After "Summarise with AI", patterns are the AI-merged list; before, the rule-based one.
+  const groups = ai?.groups || report?.groups || [];
 
   useEffect(() => {
     invoke('getOrganizations').then((result) => {
@@ -94,19 +102,86 @@ function App() {
     } finally { setFullRun(null); }
   }
 
+  const reportOrgId = lastQuery?.organization?.id;
+  useEffect(() => {
+    setPublication(null); setDraft(null); setPublishError('');
+    if (!report || !reportOrgId) return;
+    invoke('getPublication', { orgId: reportOrgId }).then(setPublication).catch((e) => setPublishError(e.message || 'Could not check the portal report.'));
+  }, [report?.organization, report?.startDate, report?.endDate, reportOrgId]);
+
+  function prepareDraft() {
+    setPublishError('');
+    setDraft({
+      patterns: groups.slice(0, 12).map((g, index) => ({
+        include: index < 8 && aiPattern(index)?.coherent !== false,
+        title: aiPattern(index)?.title || g.theme,
+        summary: aiPattern(index)?.summary || '',
+        count: g.count,
+        previousCount: g.previousCount,
+        estimated: Boolean(g.estimated),
+      })),
+      overview: ai?.overview || '',
+      actions: (ai?.actions || []).join('\n'),
+    });
+  }
+
+  const editPattern = (index, change) => setDraft((d) => ({ ...d, patterns: d.patterns.map((p, i) => (i === index ? { ...p, ...change } : p)) }));
+
+  async function publish() {
+    setPublishing(true); setPublishError('');
+    try {
+      const published = await invoke('publishReport', {
+        snapshot: {
+          organization: { id: reportOrgId },
+          period: { from: report.startDate, to: report.endDate },
+          totals: { current: report.currentCount, previous: report.previousCount },
+          timeSeries: report.timeSeries,
+          patterns: draft.patterns.filter((p) => p.include),
+          overview: draft.overview,
+          actions: draft.actions.split('\n'),
+        },
+      });
+      setPublication((p) => ({ ...p, published })); setDraft(null);
+    } catch (e) { setPublishError(e.message || 'Publishing failed.'); }
+    finally { setPublishing(false); }
+  }
+
+  async function unpublish() {
+    setPublishing(true); setPublishError('');
+    try {
+      await invoke('unpublishReport', { orgId: reportOrgId });
+      setPublication((p) => ({ ...p, published: null }));
+    } catch (e) { setPublishError(e.message || 'Removing the report failed.'); }
+    finally { setPublishing(false); }
+  }
+
   function choosePreset(key) {
     const range = presetRange(key);
     if (range) { setFrom(range.from); setTo(range.to); }
   }
 
+  // Two calls, each inside Forge's 25s limit: merge same-issue groups, then name and summarise.
   async function runAi() {
     setAiLoading(true); setAiError('');
-    try { setAi(await invoke('aiSummary', { report })); }
-    catch (e) { setAiError(e.message || 'The AI summary could not be created.'); }
-    finally { setAiLoading(false); }
+    try {
+      setAiStep('merge');
+      let merged = report.groups;
+      let mergedIssues = 0;
+      try {
+        const { merges } = await invoke('aiMerge', { report });
+        merged = applyMerges(report.groups, merges);
+        mergedIssues = merges.filter((m) => m.members.length > 1).length;
+      } catch (e) {
+        setAiError(`Similar patterns couldn’t be merged (${e.message || 'AI error'}); the summary uses the patterns as found.`);
+      }
+      setAiStep('summary');
+      const summary = await invoke('aiSummary', { report: { ...report, groups: merged } });
+      setAi({ ...summary, groups: merged, mergedIssues, mergedGroups: report.groups.length - merged.length });
+    } catch (e) { setAiError(e.message || 'The AI summary could not be created.'); }
+    finally { setAiLoading(false); setAiStep(''); }
   }
 
-  // AI names apply to the first patterns only (aiInput sends 12); the index is the report order.
+  // AI names apply to the first merged patterns (aiInput sends 12); the index is the merged order.
   const aiPattern = (index) => ai?.patterns.find((p) => p.index === index);
   const patternName = (group, index) => aiPattern(index)?.title || group.theme;
 
@@ -115,7 +190,7 @@ function App() {
     const rows = [['Customer', report.organization], ['Period', `${report.startDate} to ${report.endDate}`]];
     if (ai?.overview) rows.push(['AI overview', ai.overview]);
     rows.push([], ['Pattern', 'AI name', 'Ticket count', 'Previous period', 'Change', 'Example ticket']);
-    report.groups.forEach((group, index) => rows.push([group.theme, aiPattern(index)?.title || '', group.count, group.previousCount, group.changePercent === null ? 'New' : `${group.changePercent}%`, group.tickets[0]?.key || '']));
+    groups.forEach((group, index) => rows.push([group.theme, aiPattern(index)?.title || '', group.count, group.previousCount, group.changePercent === null ? 'New' : `${group.changePercent}%`, group.tickets[0]?.key || '']));
     rows.push([], ['Date bucket', 'Tickets']);
     for (const point of report.timeSeries) rows.push([point.date, point.count]);
     const csv = rows.map((r) => r.map((cell) => `"${String(cell ?? '').replaceAll('"', '""')}"`).join(',')).join('\n');
@@ -187,20 +262,21 @@ function App() {
       <div className="nq-kpis">
         <Kpi icon="▤" label="Tickets in period" value={report.currentCount.toLocaleString()} hint={`for ${report.organization}`} />
         <Kpi icon="↗" kind={report.change > 0 ? 'warning' : report.change < 0 ? 'success' : 'info'} label="Vs previous period" value={totalChange} hint={`${signed(report.change)} tickets · previous ${report.previousCount}`} />
-        <Kpi icon="⌘" kind="warning" label="Recurring patterns" value={report.groups.length} hint="with at least 2 related tickets" />
+        <Kpi icon="⌘" kind="warning" label="Recurring patterns" value={groups.length} hint="with at least 2 related tickets" />
         <Kpi icon="✓" kind="success" label="Tickets analysed" value={report.analyzedCount.toLocaleString()} hint={report.sampled ? 'sample spread across the period' : 'rule-based text matching'} />
       </div>
 
-      {report.groups.length > 0 && <Card
+      {groups.length > 0 && <Card
         title="AI summary"
         description="Atlassian-hosted Claude. Ticket text stays on the Atlassian platform."
         actions={<Button appearance={ai ? 'default' : 'primary'} small onClick={runAi} disabled={aiLoading}>{aiLoading ? 'Summarising…' : ai ? 'Regenerate' : 'Summarise with AI'}</Button>}
         footer={ai && <span className="nq-muted">AI-generated from the pattern names, counts and example summaries above. Check the linked tickets before sharing.</span>}
       >
         {aiError && <Notice kind="error" title="The AI summary didn’t work.">{aiError}</Notice>}
-        {aiLoading && <Loading inline text="Reading the patterns and writing a summary…" />}
+        {aiLoading && <Loading inline text={aiStep === 'merge' ? 'Finding patterns that are the same issue…' : 'Naming the issues and writing a summary…'} />}
         {!ai && !aiLoading && !aiError && <p className="nq-muted">Get plain-English names for the top patterns, an overview for a customer review and suggested follow-ups.</p>}
         {ai && !aiLoading && <div className="nq-stack">
+          {ai.mergedIssues > 0 && <p className="nq-muted">Combined {ai.mergedGroups + ai.mergedIssues} patterns that describe the same issue into {ai.mergedIssues}. Expand a pattern to see what it combines.</p>}
           {ai.overview && <p className="ci-ai__overview">{ai.overview}</p>}
           {ai.actions.length > 0 && <div>
             <strong>Suggested follow-ups</strong>
@@ -225,8 +301,8 @@ function App() {
         </Card>
 
         <Card title="What stands out" description="Quick read" footer={<span className="nq-muted">Patterns are based on matching ticket text. Review the examples before drawing conclusions.</span>}>
-          {report.groups.length
-            ? <ol className="ci-insights">{report.groups.slice(0, 3).map((g, index) => <li key={g.id}>
+          {groups.length
+            ? <ol className="ci-insights">{groups.slice(0, 3).map((g, index) => <li key={g.id}>
               <div>
                 <strong>{patternName(g, index)}</strong>
                 <p className="nq-muted">{g.estimated ? '≈' : ''}{g.count} related tickets{g.previousCount ? `, ${g.change >= 0 ? 'up' : 'down'} ${Math.abs(g.change)} from the previous period` : ', newly recurring this period'}</p>
@@ -238,7 +314,7 @@ function App() {
       </div>
 
       <Card
-        title={<>Issue patterns <span className="nq-pill nq-pill--neutral">{report.groups.length}</span></>}
+        title={<>Issue patterns <span className="nq-pill nq-pill--neutral">{groups.length}</span></>}
         description="Repeated customer issues, with ticket evidence"
         footer={<span className="nq-muted">Similarity groups use ticket summaries and descriptions. They are clues for review, not confirmed root causes.</span>}
       >
@@ -264,12 +340,15 @@ function App() {
         {report.cutShort && <Notice kind="warning">
           The analysis stopped fetching early to stay within Jira’s time limit, so the sample is smaller than usual. Try a shorter period or a project filter.
         </Notice>}
-        {report.groups.length
-          ? <div className="ci-patterns">{report.groups.map((group, index) => <details className="ci-pattern" key={group.id}>
+        {groups.length
+          ? <div className="ci-patterns">{groups.map((group, index) => <details className="ci-pattern" key={group.id}>
             <summary>
               <span className="ci-pattern__title">
                 <strong>{patternName(group, index)}</strong>
-                {aiPattern(index) && <small className="nq-muted"> {group.theme}{aiPattern(index).coherent ? '' : ' · '}{!aiPattern(index).coherent && <Lozenge kind="warning">Mixed</Lozenge>}</small>}
+                {(aiPattern(index) || group.ruleNames) && <small className="nq-muted">
+                  {group.mergedFrom ? `Combines ${group.mergedFrom.length}: ${group.mergedFrom.join(' · ')}` : (group.ruleNames?.[0] || group.theme)}
+                  {aiPattern(index)?.coherent === false && <> · <Lozenge kind="warning">Mixed</Lozenge></>}
+                </small>}
               </span>
               <span className="ci-pattern__sample nq-muted">{aiPattern(index)?.summary || group.sampleSummary}</span>
               <span className="ci-meter"><i style={{ width: `${Math.max(8, (group.count / maxGroup) * 100)}%` }} /></span>
@@ -290,6 +369,45 @@ function App() {
             </div>
           </details>)}</div>
           : <EmptyState compact title="No repeated issue patterns detected">There are no groups of similar tickets with more than one request in this period.</EmptyState>}
+      </Card>
+
+      <Card
+        title="Customer portal"
+        description={`What ${report.organization}'s portal users see under “Service report” in their user menu.`}
+        actions={publication?.canPublish && !draft && <>
+          {publication.published && <Button small appearance="subtle" onClick={unpublish} disabled={publishing}>Remove from portal</Button>}
+          <Button small appearance="primary" onClick={prepareDraft} disabled={publishing}>{publication.published ? 'Replace portal report' : 'Prepare portal report'}</Button>
+        </>}
+      >
+        {publishError && <Notice kind="error" title="Portal report">{publishError}</Notice>}
+        {!publication && !publishError && <Loading inline text="Checking the portal report…" />}
+        {publication && <p className="nq-muted">
+          {publication.published
+            ? `Published ${new Date(publication.published.publishedAt).toLocaleString()} for ${publication.published.period.from} to ${publication.published.period.to}.`
+            : 'Nothing is published for this organisation yet.'}
+          {!publication.canPublish && ' Only Jira admins and project admins can publish.'}
+        </p>}
+        {draft && <div className="nq-stack">
+          <Notice>Customers see these names, descriptions and counts. They don’t see ticket keys, titles or who raised them. {ai ? '' : 'Run the AI summary first for suggested names and a summary.'}</Notice>
+          <div className="ci-draft">
+            {draft.patterns.map((p, index) => <div className="ci-draft__row" key={index}>
+              <input type="checkbox" className="nq-check" checked={p.include} aria-label={`Include ${p.title}`} onChange={(e) => editPattern(index, { include: e.target.checked })} />
+              <input className="nq-input" value={p.title} maxLength={80} aria-label="Issue name" onChange={(e) => editPattern(index, { title: e.target.value })} />
+              <input className="nq-input" value={p.summary} maxLength={300} placeholder="One-line description (optional)" aria-label="Issue description" onChange={(e) => editPattern(index, { summary: e.target.value })} />
+              <span className="nq-muted">{p.estimated ? '≈' : ''}{p.count}</span>
+            </div>)}
+          </div>
+          <Field label="Summary" htmlFor="ci-draft-overview">
+            <textarea id="ci-draft-overview" className="nq-textarea" rows={4} maxLength={1500} value={draft.overview} onChange={(e) => setDraft((d) => ({ ...d, overview: e.target.value }))} />
+          </Field>
+          <Field label="Next steps (one per line)" htmlFor="ci-draft-actions" help="These are shown to the customer. Remove anything internal.">
+            <textarea id="ci-draft-actions" className="nq-textarea" rows={3} value={draft.actions} onChange={(e) => setDraft((d) => ({ ...d, actions: e.target.value }))} />
+          </Field>
+          <div className="nq-inline">
+            <Button appearance="primary" onClick={publish} disabled={publishing || !draft.patterns.some((p) => p.include && p.title.trim())}>{publishing ? 'Publishing…' : 'Publish to portal'}</Button>
+            <Button appearance="subtle" onClick={() => setDraft(null)} disabled={publishing}>Cancel</Button>
+          </div>
+        </div>}
       </Card>
 
       <div className="nq-spread ci-method">
