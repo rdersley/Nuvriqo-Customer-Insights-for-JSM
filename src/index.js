@@ -3,11 +3,23 @@ import { asUser, route } from '@forge/api';
 import { buildReport, chartBuckets, textOf } from './analysis.js';
 import { licenseAllows, UNLICENSED_MESSAGE } from './license.js';
 import { summarise } from './ai.js';
+import { snapshotFrom } from './publish.js';
+import { deleteReport, loadReport, saveReport } from './storage.js';
 
 // This package is "type": "module"; Forge's bundler then hands CommonJS packages
 // over as their exports object, so the class sits on `.default`.
 const Resolver = ResolverModule.default ?? ResolverModule;
 const resolver = new Resolver();
+
+// Agent-only. Portal customers use src/portal.js; this also refuses them here
+// in case a module is ever pointed at the wrong function.
+function define(name, fn) {
+  resolver.define(name, (request) => {
+    const type = request?.context?.accountType;
+    if (type && type !== 'licensed') throw new Error('Customer Insights is only available to agents.');
+    return fn(request);
+  });
+}
 const PERIOD_SAMPLE = 900; // most tickets analysed per period (groupIssues' cap)
 const SAMPLE_SLICES = 9;
 const CONCURRENCY = 6;
@@ -65,7 +77,7 @@ async function readJson(response, label) {
 }
 
 // Unlicensed installs get the flag and nothing else, so the page can explain why.
-resolver.define('getOrganizations', async ({ context }) => {
+define('getOrganizations', async ({ context }) => {
   if (!licenseAllows(context)) return { licensed: false, organizations: [] };
   const organizations = [];
   let start = 0;
@@ -118,7 +130,7 @@ const FULL_PAGES_PER_CALL = 5;
 const FULL_CALL_BUDGET_MS = 12000;
 const DESCRIPTION_CHARS = 600;
 
-resolver.define('fetchTickets', async ({ payload, context }) => {
+define('fetchTickets', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
   const query = parseQuery(payload);
   const { from, toExclusive } = payload;
@@ -148,7 +160,7 @@ resolver.define('fetchTickets', async ({ payload, context }) => {
   return { tickets, nextPageToken: token || null };
 });
 
-resolver.define('analyze', async ({ payload, context }) => {
+define('analyze', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
   const { organization, startDate, endDate, cleanProjects, previousStart, endExclusive, between } = parseQuery(payload);
   // Resolvers are killed at 25s; stop starting new fetches after the budget.
@@ -203,12 +215,52 @@ resolver.define('analyze', async ({ payload, context }) => {
 
 // Opt-in, separate from analyze so it gets its own time limit. The report comes
 // from this user's own analysis in the page; aiInput() bounds what is sent.
-resolver.define('aiSummary', async ({ payload, context }) => {
+define('aiSummary', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
   const startedAt = Date.now();
   const result = await summarise(payload?.report || {});
   console.log(`aiSummary: ${result.model}, ${result.patterns.length} patterns in ${Date.now() - startedAt}ms`);
   return result;
+});
+
+// Publishing to the customer portal. Jira admins and project admins only.
+async function canPublish() {
+  const response = await asUser().requestJira(route`/rest/api/3/mypermissions?permissions=ADMINISTER,ADMINISTER_PROJECTS`, { headers: { Accept: 'application/json' } });
+  const data = await readJson(response, 'Permission check');
+  return Boolean(data.permissions?.ADMINISTER?.havePermission || data.permissions?.ADMINISTER_PROJECTS?.havePermission);
+}
+
+/** The organisation as this agent can see it; refuses ids they can't. */
+async function visibleOrganisation(orgId) {
+  if (!/^\d{1,18}$/.test(String(orgId))) throw new Error('Invalid organisation.');
+  const response = await asUser().requestJira(route`/rest/servicedeskapi/organization/${String(orgId)}`, { headers: { Accept: 'application/json' } });
+  const data = await readJson(response, 'Organization lookup');
+  return { id: String(data.id), name: data.name };
+}
+
+define('getPublication', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  const organization = await visibleOrganisation(payload?.orgId);
+  const [allowed, published] = await Promise.all([canPublish(), loadReport(organization.id)]);
+  return { canPublish: allowed, published };
+});
+
+define('publishReport', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  if (!(await canPublish())) throw new Error('Only Jira admins and project admins can publish to the portal.');
+  const organization = await visibleOrganisation(payload?.snapshot?.organization?.id);
+  const snapshot = snapshotFrom({ ...payload.snapshot, organization }, { publishedBy: context?.accountId });
+  await saveReport(snapshot);
+  console.log(`publishReport: org ${organization.id}, ${snapshot.patterns.length} patterns`);
+  return snapshot;
+});
+
+define('unpublishReport', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  if (!(await canPublish())) throw new Error('Only Jira admins and project admins can remove portal reports.');
+  const organization = await visibleOrganisation(payload?.orgId);
+  await deleteReport(organization.id);
+  return { removed: true };
 });
 
 export const handler = resolver.getDefinitions();

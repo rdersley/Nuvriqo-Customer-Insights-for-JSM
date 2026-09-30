@@ -32,6 +32,10 @@ function App() {
   const [fullRun, setFullRun] = useState(null); // { fetched, total, phase } while running
   const [fullError, setFullError] = useState('');
   const cancelFull = useRef(false);
+  const [publication, setPublication] = useState(null); // { canPublish, published } for the report's organisation
+  const [draft, setDraft] = useState(null);
+  const [publishing, setPublishing] = useState(false);
+  const [publishError, setPublishError] = useState('');
   const preset = matchPreset(from, to);
   const today = localIso(new Date());
   const [projectsText, setProjectsText] = useState('');
@@ -92,6 +96,59 @@ function App() {
     } catch (e) {
       if (!(e instanceof Cancelled)) setFullError(e.message || 'The full analysis failed.');
     } finally { setFullRun(null); }
+  }
+
+  const reportOrgId = lastQuery?.organization?.id;
+  useEffect(() => {
+    setPublication(null); setDraft(null); setPublishError('');
+    if (!report || !reportOrgId) return;
+    invoke('getPublication', { orgId: reportOrgId }).then(setPublication).catch((e) => setPublishError(e.message || 'Could not check the portal report.'));
+  }, [report?.organization, report?.startDate, report?.endDate, reportOrgId]);
+
+  function prepareDraft() {
+    setPublishError('');
+    setDraft({
+      patterns: report.groups.slice(0, 12).map((g, index) => ({
+        include: index < 8 && aiPattern(index)?.coherent !== false,
+        title: aiPattern(index)?.title || g.theme,
+        summary: aiPattern(index)?.summary || '',
+        count: g.count,
+        previousCount: g.previousCount,
+        estimated: Boolean(g.estimated),
+      })),
+      overview: ai?.overview || '',
+      actions: (ai?.actions || []).join('\n'),
+    });
+  }
+
+  const editPattern = (index, change) => setDraft((d) => ({ ...d, patterns: d.patterns.map((p, i) => (i === index ? { ...p, ...change } : p)) }));
+
+  async function publish() {
+    setPublishing(true); setPublishError('');
+    try {
+      const published = await invoke('publishReport', {
+        snapshot: {
+          organization: { id: reportOrgId },
+          period: { from: report.startDate, to: report.endDate },
+          totals: { current: report.currentCount, previous: report.previousCount },
+          timeSeries: report.timeSeries,
+          patterns: draft.patterns.filter((p) => p.include),
+          overview: draft.overview,
+          actions: draft.actions.split('\n'),
+        },
+      });
+      setPublication((p) => ({ ...p, published })); setDraft(null);
+    } catch (e) { setPublishError(e.message || 'Publishing failed.'); }
+    finally { setPublishing(false); }
+  }
+
+  async function unpublish() {
+    setPublishing(true); setPublishError('');
+    try {
+      await invoke('unpublishReport', { orgId: reportOrgId });
+      setPublication((p) => ({ ...p, published: null }));
+    } catch (e) { setPublishError(e.message || 'Removing the report failed.'); }
+    finally { setPublishing(false); }
   }
 
   function choosePreset(key) {
@@ -290,6 +347,45 @@ function App() {
             </div>
           </details>)}</div>
           : <EmptyState compact title="No repeated issue patterns detected">There are no groups of similar tickets with more than one request in this period.</EmptyState>}
+      </Card>
+
+      <Card
+        title="Customer portal"
+        description={`What ${report.organization}'s portal users see under “Service report” in their user menu.`}
+        actions={publication?.canPublish && !draft && <>
+          {publication.published && <Button small appearance="subtle" onClick={unpublish} disabled={publishing}>Remove from portal</Button>}
+          <Button small appearance="primary" onClick={prepareDraft} disabled={publishing}>{publication.published ? 'Replace portal report' : 'Prepare portal report'}</Button>
+        </>}
+      >
+        {publishError && <Notice kind="error" title="Portal report">{publishError}</Notice>}
+        {!publication && !publishError && <Loading inline text="Checking the portal report…" />}
+        {publication && <p className="nq-muted">
+          {publication.published
+            ? `Published ${new Date(publication.published.publishedAt).toLocaleString()} for ${publication.published.period.from} to ${publication.published.period.to}.`
+            : 'Nothing is published for this organisation yet.'}
+          {!publication.canPublish && ' Only Jira admins and project admins can publish.'}
+        </p>}
+        {draft && <div className="nq-stack">
+          <Notice>Customers see these names, descriptions and counts. They don’t see ticket keys, titles or who raised them. {ai ? '' : 'Run the AI summary first for suggested names and a summary.'}</Notice>
+          <div className="ci-draft">
+            {draft.patterns.map((p, index) => <div className="ci-draft__row" key={index}>
+              <input type="checkbox" className="nq-check" checked={p.include} aria-label={`Include ${p.title}`} onChange={(e) => editPattern(index, { include: e.target.checked })} />
+              <input className="nq-input" value={p.title} maxLength={80} aria-label="Issue name" onChange={(e) => editPattern(index, { title: e.target.value })} />
+              <input className="nq-input" value={p.summary} maxLength={300} placeholder="One-line description (optional)" aria-label="Issue description" onChange={(e) => editPattern(index, { summary: e.target.value })} />
+              <span className="nq-muted">{p.estimated ? '≈' : ''}{p.count}</span>
+            </div>)}
+          </div>
+          <Field label="Summary" htmlFor="ci-draft-overview">
+            <textarea id="ci-draft-overview" className="nq-textarea" rows={4} maxLength={1500} value={draft.overview} onChange={(e) => setDraft((d) => ({ ...d, overview: e.target.value }))} />
+          </Field>
+          <Field label="Next steps (one per line)" htmlFor="ci-draft-actions" help="These are shown to the customer. Remove anything internal.">
+            <textarea id="ci-draft-actions" className="nq-textarea" rows={3} value={draft.actions} onChange={(e) => setDraft((d) => ({ ...d, actions: e.target.value }))} />
+          </Field>
+          <div className="nq-inline">
+            <Button appearance="primary" onClick={publish} disabled={publishing || !draft.patterns.some((p) => p.include && p.title.trim())}>{publishing ? 'Publishing…' : 'Publish to portal'}</Button>
+            <Button appearance="subtle" onClick={() => setDraft(null)} disabled={publishing}>Cancel</Button>
+          </div>
+        </div>}
       </Card>
 
       <div className="nq-spread ci-method">
