@@ -3,6 +3,7 @@
 .nq-stack + .nq-stack { margin-top: var(--nq-space-400); padding-top: var(--nq-space-300); border-top: 1px solid var(--nq-border); }
 .cp-title { align-items: flex-end; flex-wrap: wrap; }
 .cp-title p { margin: 2px 0 0; }
+.cp-updated { display: flex; align-items: center; gap: var(--nq-space-100); flex-wrap: wrap; }
 .cp-text { margin: 0; color: var(--nq-text); line-height: var(--nq-line-height); }
 
 .cp-issues { list-style: none; margin: 0; padding: 0; }

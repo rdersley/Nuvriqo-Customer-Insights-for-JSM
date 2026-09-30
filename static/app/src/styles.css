@@ -58,6 +58,11 @@
 .ci-progress__bar { height: 8px; }
 .ci-progress__bar i { transition: width 0.3s ease; }
 
+/* Live portal reports */
+.ci-live { flex-wrap: wrap; align-items: flex-start; }
+.ci-live-edit { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--nq-space-150); }
+.ci-live-edit .nq-field { margin: 0; }
+
 /* Portal report editor */
 .ci-draft { display: flex; flex-direction: column; gap: var(--nq-space-100); }
 .ci-draft__row { display: grid; grid-template-columns: 20px minmax(0, 1fr) minmax(0, 1.6fr) 56px; gap: var(--nq-space-100); align-items: center; }

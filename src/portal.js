@@ -1,11 +1,13 @@
 // Customer portal resolver. Kept separate from the agent resolver (index.js):
 // portal customers can call every definition of the function their module
-// uses, so this function offers exactly one read.
+// uses, so this function offers only: read my reports, and ask for a refresh.
 import Resolver from '@forge/resolver';
 import { asApp, route } from '@forge/api';
 import { licenseAllows } from './license.js';
 import { portalView } from './publish.js';
-import { loadReport, loadSettings } from './storage.js';
+import { nextCustomerRefresh } from './live.js';
+import { queueRefresh } from './liveJobs.js';
+import { loadLiveConfig, loadLiveState, loadReport, loadSettings, updateLiveState } from './storage.js';
 
 const ResolverClass = Resolver.default ?? Resolver;
 const resolver = new ResolverClass();
@@ -25,16 +27,45 @@ async function organisationsOf(accountId) {
   return ids;
 }
 
+async function available(context) {
+  if (!licenseAllows(context)) return false;
+  if (String(process.env.PORTAL_REPORTS ?? '').trim().toLowerCase() === 'off') return false;
+  return (await loadSettings()).portalEnabled !== false;
+}
+
+const viewer = (context) => (context?.accountId && context.accountId !== 'unidentified' ? context.accountId : null);
+
 resolver.define('myReports', async ({ context }) => {
-  if (!licenseAllows(context)) return { available: false, reports: [] };
-  const forcedOff = String(process.env.PORTAL_REPORTS ?? '').trim().toLowerCase() === 'off';
-  if (forcedOff || (await loadSettings()).portalEnabled === false) return { available: false, reports: [] };
-  const accountId = context?.accountId;
-  if (!accountId || accountId === 'unidentified') return { available: true, reports: [] };
+  if (!(await available(context))) return { available: false, reports: [] };
+  const accountId = viewer(context);
+  if (!accountId) return { available: true, reports: [] };
   const orgIds = await organisationsOf(accountId);
-  const reports = (await Promise.all(orgIds.map(loadReport))).filter(Boolean).map(portalView);
-  reports.sort((a, b) => b.publishedAt.localeCompare(a.publishedAt));
-  return { available: true, reports };
+  const reports = await Promise.all(orgIds.map(async (orgId) => {
+    const snapshot = await loadReport(orgId);
+    if (!snapshot) return null;
+    const state = snapshot.live ? await loadLiveState(orgId) : {};
+    return {
+      ...portalView(snapshot),
+      refreshing: Boolean(state.queuedAt),
+      nextRefreshAt: snapshot.live ? nextCustomerRefresh(state) || null : null,
+    };
+  }));
+  const list = reports.filter(Boolean).sort((a, b) => b.publishedAt.localeCompare(a.publishedAt));
+  return { available: true, reports: list };
+});
+
+// At most once an hour per organisation, and only for the viewer's own organisations.
+resolver.define('refreshMyReport', async ({ payload, context }) => {
+  if (!(await available(context))) throw new Error('Service reports aren’t available.');
+  const accountId = viewer(context);
+  const orgId = String(payload?.orgId ?? '');
+  if (!accountId || !(await organisationsOf(accountId)).includes(orgId)) throw new Error('This report isn’t available to you.');
+  if (!(await loadLiveConfig(orgId))) throw new Error('This report isn’t updated automatically.');
+  const next = nextCustomerRefresh(await loadLiveState(orgId));
+  if (next) return { queued: false, nextRefreshAt: next };
+  await updateLiveState(orgId, { requestedAt: new Date().toISOString() });
+  await queueRefresh(orgId, 'customer');
+  return { queued: true };
 });
 
 export const handler = resolver.getDefinitions();
