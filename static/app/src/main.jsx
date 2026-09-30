@@ -1,17 +1,18 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { invoke, view } from '@forge/bridge';
 import '@nuvriqo/ui/css';
 import { enableTheme } from '@nuvriqo/ui/theme';
 import { AppHeader, Button, Card, EmptyState, Field, Footer, Kpi, Loading, Lozenge, Notice } from '@nuvriqo/ui/react';
 import { version } from '../../../package.json';
+import { localIso, matchPreset, presetRange, PRESETS } from '../../../src/dates.js';
+import { analyseEveryTicket, Cancelled, FULL_LIMIT } from './fullAnalysis.js';
 import './styles.css';
 
 enableTheme(view);
 
 const PRODUCT = 'Customer Insights';
-const dateValue = (date) => date.toISOString().slice(0, 10);
-const daysAgo = (days) => { const d = new Date(); d.setDate(d.getDate() - days); return dateValue(d); };
+const DEFAULT_RANGE = presetRange('last-30');
 const signed = (n) => `${n > 0 ? '+' : ''}${n}`;
 
 // More tickets than last period is the thing to look at, so rises are flagged.
@@ -25,8 +26,14 @@ function TrendLozenge({ group }) {
 function App() {
   const [orgs, setOrgs] = useState([]);
   const [organizationId, setOrganizationId] = useState('');
-  const [from, setFrom] = useState(daysAgo(30));
-  const [to, setTo] = useState(dateValue(new Date()));
+  const [from, setFrom] = useState(DEFAULT_RANGE.from);
+  const [to, setTo] = useState(DEFAULT_RANGE.to);
+  const [lastQuery, setLastQuery] = useState(null);
+  const [fullRun, setFullRun] = useState(null); // { fetched, total, phase } while running
+  const [fullError, setFullError] = useState('');
+  const cancelFull = useRef(false);
+  const preset = matchPreset(from, to);
+  const today = localIso(new Date());
   const [projectsText, setProjectsText] = useState('');
   const [report, setReport] = useState(null);
   const [loadingOrgs, setLoadingOrgs] = useState(true);
@@ -58,12 +65,38 @@ function App() {
   async function runAnalysis(event) {
     event?.preventDefault();
     if (!selectedOrg) return;
-    setLoadingReport(true); setError(''); setReport(null); setAi(null); setAiError('');
+    cancelFull.current = true;
+    setLoadingReport(true); setError(''); setReport(null); setAi(null); setAiError(''); setFullRun(null); setFullError('');
+    const query = { organization: selectedOrg, startDate: from, endDate: to, projects };
     try {
-      const result = await invoke('analyze', { organization: selectedOrg, startDate: from, endDate: to, projects });
+      const result = await invoke('analyze', query);
       setReport(result);
+      setLastQuery(query);
     } catch (e) { setError(e.message || 'Analysis failed. Check your Jira access and filters.'); }
     finally { setLoadingReport(false); }
+  }
+
+  async function runFull() {
+    cancelFull.current = false;
+    setFullError('');
+    setFullRun({ fetched: 0, total: report.currentCount + report.previousCount, phase: 'fetching' });
+    try {
+      const full = await analyseEveryTicket({
+        query: lastQuery,
+        sampled: report,
+        onProgress: (fetched, total, phase) => setFullRun({ fetched, total, phase }),
+        isCancelled: () => cancelFull.current,
+      });
+      if (cancelFull.current) return;
+      setReport(full); setAi(null); setAiError('');
+    } catch (e) {
+      if (!(e instanceof Cancelled)) setFullError(e.message || 'The full analysis failed.');
+    } finally { setFullRun(null); }
+  }
+
+  function choosePreset(key) {
+    const range = presetRange(key);
+    if (range) { setFrom(range.from); setTo(range.to); }
   }
 
   async function runAi() {
@@ -115,11 +148,17 @@ function App() {
             {orgs.map((org) => <option value={org.id} key={org.id}>{org.name}</option>)}
           </select>
         </Field>
+        <Field label="Period" htmlFor="ci-period">
+          <select id="ci-period" className="nq-select" value={preset} onChange={(e) => choosePreset(e.target.value)}>
+            {PRESETS.map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
+            <option value="custom" disabled={preset !== 'custom'}>Custom dates</option>
+          </select>
+        </Field>
         <Field label="From" htmlFor="ci-from">
           <input id="ci-from" className="nq-input" type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} />
         </Field>
         <Field label="To" htmlFor="ci-to">
-          <input id="ci-to" className="nq-input" type="date" value={to} min={from} max={dateValue(new Date())} onChange={(e) => setTo(e.target.value)} />
+          <input id="ci-to" className="nq-input" type="date" value={to} min={from} max={today} onChange={(e) => setTo(e.target.value)} />
         </Field>
         <Field label="Projects (optional)" htmlFor="ci-projects">
           <input id="ci-projects" className="nq-input" value={projectsText} onChange={(e) => setProjectsText(e.target.value)} placeholder="e.g. SD, HW" />
@@ -203,9 +242,25 @@ function App() {
         description="Repeated customer issues, with ticket evidence"
         footer={<span className="nq-muted">Similarity groups use ticket summaries and descriptions. They are clues for review, not confirmed root causes.</span>}
       >
-        {report.sampled && <Notice>
-          Patterns come from {report.analyzedCount.toLocaleString()} of {report.currentCount.toLocaleString()} tickets, sampled evenly across the period. Sizes marked ≈ are estimates; ticket totals, the comparison and the chart are exact.
+        {report.sampled && !fullRun && <Notice>
+          <div className="nq-spread ci-full">
+            <span>Patterns come from {report.analyzedCount.toLocaleString()} of {report.currentCount.toLocaleString()} tickets, sampled evenly across the period. Sizes marked ≈ are estimates; ticket totals, the comparison and the chart are exact.</span>
+            {report.currentCount <= FULL_LIMIT && report.previousCount <= FULL_LIMIT
+              ? <Button small onClick={runFull}>Analyse every ticket</Button>
+              : <span className="nq-muted">Too many tickets to analyse all of them; narrow the period or add a project.</span>}
+          </div>
         </Notice>}
+        {fullRun && <div className="ci-progress" role="status" aria-live="polite">
+          <div className="nq-spread">
+            <span>{fullRun.phase === 'grouping'
+              ? `Grouping ${fullRun.fetched.toLocaleString()} tickets…`
+              : `Reading tickets: ${fullRun.fetched.toLocaleString()} of ${fullRun.total.toLocaleString()}`}</span>
+            <Button small appearance="subtle" onClick={() => { cancelFull.current = true; setFullRun(null); }}>Cancel</Button>
+          </div>
+          <div className="ci-meter ci-progress__bar"><i style={{ width: `${Math.min(100, Math.round((fullRun.fetched / Math.max(1, fullRun.total)) * 100))}%` }} /></div>
+        </div>}
+        {fullError && <Notice kind="error" title="The full analysis didn’t finish.">{fullError}</Notice>}
+        {report.full && <Notice kind="success">All {report.currentCount.toLocaleString()} tickets in the period were analysed (plus {report.previousCount.toLocaleString()} from the previous period for trends).</Notice>}
         {report.cutShort && <Notice kind="warning">
           The analysis stopped fetching early to stay within Jira’s time limit, so the sample is smaller than usual. Try a shorter period or a project filter.
         </Notice>}

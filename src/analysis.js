@@ -7,7 +7,7 @@ const GENERIC = new Set('issue issues problem problems please help request ticke
 const CODE_SEGMENT = /^[A-Z0-9]{2,8}$/;
 
 /** Visible text of a plain string or an Atlassian Document Format node. */
-function textOf(value, output = []) {
+export function textOf(value, output = []) {
   if (typeof value === 'string') output.push(value);
   else if (Array.isArray(value)) value.forEach((item) => textOf(item, output));
   else if (value && typeof value === 'object') {
@@ -122,7 +122,16 @@ function vectorise(rows) {
     tokenized.vector = vector;
     tokenized.norm = Math.sqrt(squared);
   }
+  return df;
 }
+
+// A summary word in more than this share of tickets ("vpos", "app") would make
+// every ticket compare with thousands of one-ticket clusters. For such words
+// the lookup holds every cluster with 2+ tickets but only the most recent
+// single-ticket ones, which is enough for new pairs to form.
+const BROAD_SHARE = 0.02;
+const BROAD_MIN_ROWS = 500;
+const RECENT_SINGLES = 200;
 
 function newCluster(row) {
   const cluster = { members: [], centroid: new Map(), squared: 0, summaryWords: new Set() };
@@ -166,25 +175,42 @@ function themeName(members, representative) {
  */
 function cluster(issues, threshold, limit) {
   const rows = issues.slice(0, limit).map((issue) => ({ issue, tokenized: tokenize(issue) }));
-  vectorise(rows);
+  const df = vectorise(rows);
   rows.sort((a, b) => Date.parse(a.issue.fields.created) - Date.parse(b.issue.fields.created));
   const clusters = [];
-  const bySummaryWord = new Map();
+  const bySummaryWord = new Map(); // word -> clusters (for broad words: 2+ tickets only)
+  const recentSingles = new Map(); // broad word -> newest single-ticket clusters
+  const broad = (w) => rows.length >= BROAD_MIN_ROWS && df.get(w) > rows.length * BROAD_SHARE;
+  const post = (w, c) => {
+    if (!bySummaryWord.has(w)) bySummaryWord.set(w, new Set());
+    bySummaryWord.get(w).add(c);
+  };
   for (const row of rows) {
     const candidates = new Set();
-    for (const w of row.tokenized.summaryWords) for (const c of bySummaryWord.get(w) || []) candidates.add(c);
+    for (const w of row.tokenized.summaryWords) {
+      for (const c of bySummaryWord.get(w) || []) candidates.add(c);
+      for (const c of recentSingles.get(w) || []) candidates.add(c);
+    }
     let best = null;
     let bestScore = threshold;
     for (const cluster of candidates) {
       const score = cosineToCluster(row, cluster);
       if (score >= bestScore) { best = cluster; bestScore = score; }
     }
-    const target = best || newCluster(row);
-    if (best) addToCluster(best, row);
-    else clusters.push(target);
-    for (const w of row.tokenized.summaryWords) {
-      if (!bySummaryWord.has(w)) bySummaryWord.set(w, new Set());
-      bySummaryWord.get(w).add(target);
+    if (best) {
+      addToCluster(best, row);
+      // Now 2+ tickets: reachable through all its words, broad ones included.
+      for (const w of best.summaryWords) post(w, best);
+    } else {
+      const single = newCluster(row);
+      clusters.push(single);
+      for (const w of row.tokenized.summaryWords) {
+        if (!broad(w)) { post(w, single); continue; }
+        const list = recentSingles.get(w) || [];
+        list.push(single);
+        if (list.length > RECENT_SINGLES) list.shift();
+        recentSingles.set(w, list);
+      }
     }
   }
   return clusters;
@@ -242,7 +268,10 @@ export function chartBuckets(periodStart, periodEnd) {
  * { current, previous, timeSeries }. Pattern counts are then scaled from the
  * sample to the period total and flagged as estimates.
  */
-export function buildReport(issues, periodStart, periodEnd, totals = null) {
+/** Most tickets per period grouped in one Forge call (the browser passes Infinity). */
+export const PERIOD_LIMIT = 900;
+
+export function buildReport(issues, periodStart, periodEnd, totals = null, { limit = PERIOD_LIMIT } = {}) {
   const from = Date.parse(periodStart);
   const to = Date.parse(periodEnd + 'T23:59:59Z');
   const duration = Math.max(1, to - from);
@@ -261,7 +290,7 @@ export function buildReport(issues, periodStart, periodEnd, totals = null) {
   // Both periods are clustered together, so a pattern is the same group in each
   // period and its trend compares like with like. Counts are scaled per period.
   const currentKeys = new Set(current.map((issue) => issue.key));
-  const trends = cluster([...current.slice(0, 900), ...previous.slice(0, 900)], 0.4, 1800)
+  const trends = cluster([...current.slice(0, limit), ...previous.slice(0, limit)], 0.4, Infinity)
     .map((found) => {
       const now = found.members.filter((row) => currentKeys.has(row.issue.key));
       return { found, now, before: found.members.length - now.length };
@@ -300,8 +329,8 @@ export function buildReport(issues, periodStart, periodEnd, totals = null) {
     changePercent: previousCount ? Math.round(((currentCount - previousCount) / previousCount) * 100) : null,
     groups: trends,
     timeSeries,
-    analyzedCount: Math.min(current.length, 900),
+    analyzedCount: Math.min(current.length, limit),
     sampled: currentScale > 1 || previousScale > 1,
-    capped: current.length > 900 || previous.length > 900,
+    capped: current.length > limit || previous.length > limit,
   };
 }

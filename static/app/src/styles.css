@@ -42,6 +42,12 @@
 
 .ci-method { flex-wrap: wrap; }
 
+/* Full analysis */
+.ci-full { flex-wrap: wrap; }
+.ci-progress { display: flex; flex-direction: column; gap: var(--nq-space-100); padding: var(--nq-space-150); border: 1px solid var(--nq-border); border-radius: var(--nq-radius-md); background: var(--nq-surface-sunken); }
+.ci-progress__bar { height: 8px; }
+.ci-progress__bar i { transition: width 0.3s ease; }
+
 /* AI summary */
 .ci-ai__overview { margin: 0; color: var(--nq-text); line-height: var(--nq-line-height); }
 .ci-ai__actions { margin: var(--nq-space-050) 0 0; padding-left: var(--nq-space-250); color: var(--nq-text); }
