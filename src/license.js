@@ -37,7 +37,8 @@ function licenseOverride(env) {
 }
 
 function evaluationCloudIds(env) {
-  return new Set(String(env?.EVALUATION_CLOUD_IDS ?? '').split(',').map((id) => id.trim().toLowerCase()).filter(Boolean));
+  // Commas or spaces: PowerShell turns an unquoted a,b into "a b".
+  return new Set(String(env?.EVALUATION_CLOUD_IDS ?? '').split(/[\s,;]+/).map((id) => id.trim().toLowerCase()).filter(Boolean));
 }
 
 export function licenseAllows(context, env = process.env) {
