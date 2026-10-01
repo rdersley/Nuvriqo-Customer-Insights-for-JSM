@@ -108,3 +108,13 @@
   .ci-quality__examples li { grid-template-columns: 96px minmax(0, 1fr); }
   .ci-quality__examples li > span:last-child { display: none; }
 }
+
+/* Spike alerts */
+.ci-alerts { list-style: none; margin: 0; padding: 0; }
+.ci-alerts li { display: flex; justify-content: space-between; gap: var(--nq-space-150); align-items: center; padding: var(--nq-space-100) 0; border-bottom: 1px solid var(--nq-border); }
+.ci-alerts li:last-child { border-bottom: 0; }
+.ci-alerts__text { display: grid; gap: 2px; min-width: 0; }
+.ci-alerts__actions { display: flex; gap: var(--nq-space-075, 6px); flex-shrink: 0; }
+@media (max-width: 700px) {
+  .ci-alerts li { flex-direction: column; align-items: flex-start; }
+}
