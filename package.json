@@ -1,6 +1,6 @@
 {
   "name": "nuvriqo-customer-insights",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "description": "Customer ticket trend analysis for Jira Service Management Cloud",
