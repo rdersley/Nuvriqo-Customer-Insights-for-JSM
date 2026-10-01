@@ -1,10 +1,13 @@
 // Forge handlers for live portal reports and spike alerts.
 // - scheduler: hourly trigger; queues the reports and alert checks that are due.
 // - consumer: queue job (up to 15 minutes); refreshes or checks one organisation.
-// Background jobs have no signed-in user, so Jira is read as the app. Only
-// counts for that organisation's own tickets are stored; customers never get
-// ticket details.
-import { runAnalysis, parseQuery } from './engine.js';
+// Background jobs have no signed-in user, so Jira is read as the app. A
+// portal report is built from `organizations = <that org>` only, so every
+// ticket in it is one shared with that organisation, which its members can
+// already open in the portal. The portal resolver (portal.js) checks the
+// viewer belongs to the organisation on every request.
+import { asApp, route } from '@forge/api';
+import { readJson, runAnalysis, parseQuery } from './engine.js';
 import { assignToApproved } from './ai.js';
 import { assignByWords, isDue, liveCounts, livePeriod, refreshedSnapshotInput } from './live.js';
 import { snapshotFrom } from './publish.js';
@@ -24,11 +27,44 @@ export async function queueRefresh(orgId, reason) {
   console.log(`live: queued ${orgId} (${reason})`);
 }
 
+/**
+ * The organisation as Jira has it now, by id. Searches use its name, so a
+ * renamed organisation is followed, and another one later given the old name
+ * is never picked up.
+ */
+async function currentOrganisation(orgId) {
+  const response = await asApp().requestJira(route`/rest/servicedeskapi/organization/${String(orgId)}`, { headers: { Accept: 'application/json' } });
+  if (response.status === 404) throw new Error('The organisation no longer exists.');
+  const data = await readJson(response, 'Organization lookup');
+  if (String(data.id) !== String(orgId) || !data.name) throw new Error('Organisation lookup returned a different organisation.');
+  return { id: String(data.id), name: String(data.name) };
+}
+
+/** Portal request links for ticket keys: project key → service desk (portal) id. */
+async function portalLinker() {
+  try {
+    const [info, desks] = await Promise.all([
+      asApp().requestJira(route`/rest/api/3/serverInfo`, { headers: { Accept: 'application/json' } }).then((r) => readJson(r, 'Server info')),
+      asApp().requestJira(route`/rest/servicedeskapi/servicedesk?limit=100`, { headers: { Accept: 'application/json' } }).then((r) => readJson(r, 'Service desks')),
+    ]);
+    const site = String(info.baseUrl || '').replace(/\/$/, '');
+    const byProject = new Map((desks.values || []).map((d) => [String(d.projectKey), String(d.id)]));
+    return (key) => {
+      const desk = byProject.get(String(key).split('-')[0]);
+      return site && desk ? `${site}/servicedesk/customer/portal/${desk}/${key}` : '';
+    };
+  } catch (error) {
+    console.log(`live: portal links unavailable: ${error.message}`);
+    return () => '';
+  }
+}
+
 export async function refreshLiveReport(orgId) {
-  const config = await loadLiveConfig(orgId);
-  if (!config) return { skipped: 'no live report' };
+  const stored = await loadLiveConfig(orgId);
+  if (!stored) return { skipped: 'no live report' };
   const startedAt = Date.now();
   try {
+    const config = { ...stored, organization: await currentOrganisation(orgId) };
     const { from, to } = livePeriod(config);
     const query = parseQuery({ organization: config.organization, startDate: from, endDate: to, projects: config.projects });
     const { breakdowns, minPatternSize, placeholders } = await loadSettings();
@@ -41,7 +77,9 @@ export async function refreshLiveReport(orgId) {
       assignments = assignByWords(report.groups, config.approved);
     }
     const counts = liveCounts(report, config.approved, assignments);
-    const snapshot = snapshotFrom(refreshedSnapshotInput(config, report, counts), { publishedBy: 'live-refresh' });
+    const linkTo = await portalLinker();
+    for (const pattern of counts.patterns) for (const example of pattern.examples || []) example.url = linkTo(example.key);
+    const snapshot = snapshotFrom(refreshedSnapshotInput(config, report, counts, new Date(), { breakdowns }), { publishedBy: 'live-refresh', detailed: true });
     // Don't overwrite if the agent removed or replaced the live report meanwhile.
     const current = await loadLiveConfig(orgId);
     if (!current || current.publishedAt !== config.publishedAt) return { skipped: 'changed while refreshing' };

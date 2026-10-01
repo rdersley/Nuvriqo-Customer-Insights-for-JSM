@@ -120,7 +120,7 @@ export function sanitizeSettings(input, selectable, organizations = []) {
   const byId = new Map(selectable.map((f) => [f.id, f]));
   const seen = new Set();
   const breakdowns = (Array.isArray(input?.breakdowns) ? input.breakdowns : [])
-    .map((b) => byId.get(String(b?.id)) && { ...byId.get(String(b.id)), label: clip(b.label, 40) || byId.get(String(b.id)).name })
+    .map((b) => byId.get(String(b?.id)) && { ...byId.get(String(b.id)), label: clip(b.label, 40) || byId.get(String(b.id)).name, portal: b.portal === true })
     .filter((b) => b && !seen.has(b.id) && seen.add(b.id))
     .slice(0, MAX_BREAKDOWNS);
   return { breakdowns, portalEnabled: input?.portalEnabled !== false, minPatternSize: patternMinimum(input?.minPatternSize), placeholders: placeholderList(input?.placeholders), alerts: sanitizeAlerts(input?.alerts, organizations) };

@@ -5,7 +5,7 @@ import Resolver from '@forge/resolver';
 import { asApp, route } from '@forge/api';
 import { licenseAllows } from './license.js';
 import { portalView } from './publish.js';
-import { nextCustomerRefresh } from './live.js';
+import { isLive, nextCustomerRefresh } from './live.js';
 import { queueRefresh } from './liveJobs.js';
 import { loadLiveConfig, loadLiveState, loadReport, loadSettings, updateLiveState } from './storage.js';
 
@@ -60,7 +60,7 @@ resolver.define('refreshMyReport', async ({ payload, context }) => {
   const accountId = viewer(context);
   const orgId = String(payload?.orgId ?? '');
   if (!accountId || !(await organisationsOf(accountId)).includes(orgId)) throw new Error('This report isn’t available to you.');
-  if (!(await loadLiveConfig(orgId))) throw new Error('This report isn’t updated automatically.');
+  if (!isLive(await loadLiveConfig(orgId))) throw new Error('This report isn’t updated automatically.');
   const next = nextCustomerRefresh(await loadLiveState(orgId));
   if (next) return { queued: false, nextRefreshAt: next };
   await updateLiveState(orgId, { requestedAt: new Date().toISOString() });

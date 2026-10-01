@@ -1,7 +1,9 @@
 // Reports published to the customer portal. An agent reviews a report and
 // publishes a snapshot for one organisation; members of that organisation see
-// it from the portal user menu. Snapshots hold themes and counts only, never
-// ticket keys, titles or who raised them.
+// it from the portal user menu.
+// What an agent's page submits is themes and counts only. Ticket examples,
+// trends and breakdowns (`detailed`) are only taken from the app's own
+// analysis of that organisation (liveJobs.js), never from a page.
 
 export const MAX_PATTERNS = 15;
 const MAX_POINTS = 60;
@@ -18,8 +20,44 @@ export function reportKey(orgId) {
   return `published-report:${orgId}`;
 }
 
-/** Validates and bounds what an agent submits. Anything not listed is dropped. */
-export function snapshotFrom(input, { publishedBy, now = new Date() } = {}) {
+const MAX_EXAMPLES = 5;
+const MAX_BREAKDOWNS = 5;
+const MAX_VALUES = 10;
+const ISSUE_KEY = /^[A-Z][A-Z0-9_]{0,49}-\d{1,10}$/;
+const hours = (value) => (Number.isFinite(Number(value)) && value !== null ? Math.max(0, Math.round(Number(value) * 10) / 10) : null);
+const share = (value) => (Number.isFinite(Number(value)) && value !== null ? Math.min(100, Math.max(0, Math.round(Number(value)))) : null);
+const portalUrl = (value) => (/^https:\/\/[^\s"<>]+\/servicedesk\/customer\/portal\/\d+\/[A-Z][A-Z0-9_]*-\d+$/.test(String(value)) ? String(value) : '');
+
+function patternDetails(p) {
+  return {
+    trend: Array.isArray(p?.trend)
+      ? p.trend.filter((t) => ISO_DATE.test(String(t?.date))).slice(0, MAX_POINTS).map((t) => ({ date: String(t.date), count: count(t.count), days: Math.max(1, count(t.days) || 1) }))
+      : null,
+    medianHours: hours(p?.medianHours),
+    openShare: share(p?.openShare),
+    examples: (Array.isArray(p?.examples) ? p.examples : [])
+      .filter((e) => ISSUE_KEY.test(String(e?.key)))
+      .slice(0, MAX_EXAMPLES)
+      .map((e) => ({ key: String(e.key), summary: clip(e.summary, 200), status: clip(e.status, 40), created: Number.isFinite(Date.parse(e?.created)) ? new Date(Date.parse(e.created)).toISOString() : null, url: portalUrl(e.url) })),
+  };
+}
+
+function breakdownsOf(input) {
+  return (Array.isArray(input) ? input : []).slice(0, MAX_BREAKDOWNS).map((b) => ({
+    label: clip(b?.label, 40),
+    estimated: Boolean(b?.estimated),
+    values: (Array.isArray(b?.values) ? b.values : []).slice(0, MAX_VALUES).map((v) => ({
+      value: clip(v?.value, 80), count: count(v?.count), previousCount: count(v?.previousCount), medianHours: hours(v?.medianHours),
+    })).filter((v) => v.value),
+  })).filter((b) => b.label && b.values.length);
+}
+
+/**
+ * Validates and bounds a snapshot. Anything not listed is dropped. `detailed`
+ * keeps ticket examples, trends, resolution and breakdowns; only the app's own
+ * analysis passes it.
+ */
+export function snapshotFrom(input, { publishedBy, now = new Date(), detailed = false } = {}) {
   const orgId = String(input?.organization?.id ?? '');
   reportKey(orgId);
   const from = String(input?.period?.from ?? '');
@@ -32,9 +70,15 @@ export function snapshotFrom(input, { publishedBy, now = new Date() } = {}) {
       count: count(p?.count),
       previousCount: count(p?.previousCount),
       estimated: Boolean(p?.estimated),
+      ...(detailed ? patternDetails(p) : {}),
     }))
     .filter((p) => p.title)
     .slice(0, MAX_PATTERNS);
+  const details = detailed ? {
+    detailed: true,
+    resolution: input?.resolution ? { medianHours: hours(input.resolution.medianHours), openShare: share(input.resolution.openShare) } : null,
+    breakdowns: breakdownsOf(input?.breakdowns),
+  } : {};
   const current = count(input?.totals?.current);
   const previous = count(input?.totals?.previous);
   return {
@@ -57,6 +101,7 @@ export function snapshotFrom(input, { publishedBy, now = new Date() } = {}) {
     // Agent-only: patterns that fit no approved issue yet.
     unreviewed: (Array.isArray(input?.unreviewed) ? input.unreviewed : []).slice(0, 10)
       .map((u) => ({ title: clip(u?.title, 80), count: count(u?.count) })).filter((u) => u.title),
+    ...details,
   };
 }
 

@@ -80,6 +80,10 @@ function App() {
             <Field label="Shown as" htmlFor={`cs-label-${index}`}>
               <input id={`cs-label-${index}`} className="nq-input" maxLength={40} value={b.label} onChange={(e) => setBreakdown(index, { label: e.target.value })} />
             </Field>
+            <label className="cs-check cs-portal" title="Customers see this breakdown in published portal reports">
+              <input type="checkbox" className="nq-check" checked={b.portal === true} onChange={(e) => setBreakdown(index, { portal: e.target.checked })} />
+              <span>Show on portal</span>
+            </label>
             <Button appearance="subtle" small onClick={() => { setSaved(false); setDraft((d) => ({ ...d, breakdowns: d.breakdowns.filter((_, i) => i !== index) })); }}>Remove</Button>
           </div>)}
           {!draft.breakdowns.length && <p className="nq-muted">No breakdown fields yet. Reports still show patterns and trends.</p>}
