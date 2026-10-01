@@ -384,7 +384,8 @@ export function chartBuckets(periodStart, periodEnd) {
 /** Most tickets per period grouped in one Forge call (the browser passes Infinity). */
 export const PERIOD_LIMIT = 900;
 
-export function buildReport(issues, periodStart, periodEnd, totals = null, { limit = PERIOD_LIMIT, breakdowns = [] } = {}) {
+export function buildReport(issues, periodStart, periodEnd, totals = null, { limit = PERIOD_LIMIT, breakdowns = [], minPatternSize = 2 } = {}) {
+  const minimum = Math.max(2, Number(minPatternSize) || 2);
   const from = Date.parse(periodStart);
   const to = Date.parse(periodEnd + 'T23:59:59Z');
   const duration = Math.max(1, to - from);
@@ -408,7 +409,7 @@ export function buildReport(issues, periodStart, periodEnd, totals = null, { lim
       const now = found.members.filter((row) => currentKeys.has(row.issue.key));
       return { found, now, before: found.members.length - now.length };
     })
-    .filter(({ now }) => now.length > 1)
+    .filter(({ now }) => now.length >= minimum)
     .map(({ found, now, before }) => {
       const group = describe(found, now);
       const count = Math.round(now.length * currentScale);
@@ -448,5 +449,6 @@ export function buildReport(issues, periodStart, periodEnd, totals = null, { lim
     analyzedCount: Math.min(current.length, limit),
     sampled: currentScale > 1 || previousScale > 1,
     capped: current.length > limit || previous.length > limit,
+    minPatternSize: minimum,
   };
 }

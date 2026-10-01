@@ -191,6 +191,20 @@ test('merging patterns adds up their field value counts', () => {
   assert.deepEqual(a.dimCounts, { base: { STN: 2 } });
 });
 
+test('patterns need the configured minimum of tickets', () => {
+  const issues = [
+    issue('SD-1', 'Crew vPOS cannot sign in', '2026-09-16T10:00:00Z'),
+    issue('SD-2', 'Crew vPOS cannot sign in', '2026-09-17T10:00:00Z'),
+    issue('SD-3', 'Printer paper order', '2026-09-18T10:00:00Z'),
+    issue('SD-4', 'Printer paper order', '2026-09-18T11:00:00Z'),
+    issue('SD-5', 'Printer paper order', '2026-09-18T12:00:00Z'),
+  ];
+  assert.equal(buildReport(issues, '2026-09-16', '2026-09-22').groups.length, 2);
+  const three = buildReport(issues, '2026-09-16', '2026-09-22', null, { minPatternSize: 3 });
+  assert.deepEqual(three.groups.map((g) => g.count), [3]);
+  assert.equal(three.minPatternSize, 3);
+});
+
 test('handles Jira rich text descriptions', () => {
   const issues = [
     issue('SD-1', 'Network issue at gate', '2026-09-10T10:00:00Z', { content: [{ text: 'airport wifi disconnected' }] }),
