@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { aiInput, parseInsights, parseMerges, suggestMerges, summarise } from '../src/ai.js';
+import { aiInput, parseAssignments, parseInsights, parseMerges, suggestMerges, summarise } from '../src/ai.js';
 import { applyMerges } from '../src/analysis.js';
 
 const report = {
@@ -122,6 +122,18 @@ test('suggestMerges forces the merge tool and sends bounded examples', async () 
   assert.equal(prompt.tool_choice.function.name, 'merge_groups');
   assert.deepEqual(result.merges, [{ title: 'Open a barset', members: [0, 1, 6] }]);
   assert.equal(JSON.parse(prompt.messages[1].content.split('\n').slice(1).join('\n')).length, 8);
+});
+
+test('pattern numbers sent as text are accepted', () => {
+  const parsed = parseInsights({ overview: 'o', actions: [], patterns: [
+    { index: '0', title: 'vPOS freezes', summary: 's', coherent: true },
+    { index: ' 2 ', title: 'Mixed one', summary: 's', coherent: 'false' },
+    { index: '1.5', title: 'Not whole', summary: 's' },
+    { index: 'x', title: 'Not a number', summary: 's' },
+  ] }, 5);
+  assert.deepEqual(parsed.patterns.map((p) => [p.index, p.coherent]), [[0, true], [2, false]]);
+  assert.deepEqual(parseMerges({ issues: [{ title: 'Open a barset', members: ['0', '1', 1] }] }, 3), [{ title: 'Open a barset', members: [0, 1] }]);
+  assert.deepEqual(parseAssignments({ assignments: [{ index: '0', issue: '1' }, { index: '1', issue: '-1' }] }, 2, 2), [1, -1]);
 });
 
 test('summarise stops on errors that are not about the model', async () => {
