@@ -8,7 +8,7 @@ import '@nuvriqo/ui/css';
 import { enableTheme } from '@nuvriqo/ui/theme';
 import { ActionBar, AppHeader, Button, Card, Field, Footer, Loading, Notice } from '@nuvriqo/ui/react';
 import { version } from '../../../package.json';
-import { DEFAULT_PLACEHOLDERS, MAX_BREAKDOWNS, MAX_PLACEHOLDERS, MIN_PATTERN } from '../../../src/settings.js';
+import { ALERT_LIMITS, DEFAULT_ALERTS, DEFAULT_PLACEHOLDERS, MAX_BREAKDOWNS, MAX_PLACEHOLDERS, MAX_WATCHED, MIN_PATTERN } from '../../../src/settings.js';
 import './styles.css';
 
 enableTheme(view);
@@ -33,6 +33,17 @@ function App() {
 
   const dirty = draft && state.settings && JSON.stringify(draft) !== JSON.stringify(state.settings);
   const fieldName = (id) => state.fields?.find((f) => f.id === id)?.name || '';
+  const [orgFilter, setOrgFilter] = useState('');
+  const [checkNote, setCheckNote] = useState('');
+  const alerts = { ...DEFAULT_ALERTS, ...draft?.alerts };
+  const setAlerts = (change) => { setSaved(false); setDraft((d) => ({ ...d, alerts: { ...DEFAULT_ALERTS, ...d.alerts, ...change } })); };
+  // Watched organisations first, then matches for the filter (at most 50 listed).
+  const shownOrgs = (() => {
+    const term = orgFilter.trim().toLowerCase();
+    const watched = alerts.organizations;
+    const others = (state.organizations || []).filter((o) => !watched.some((w) => w.id === o.id) && (!term || o.name.toLowerCase().includes(term)));
+    return [...watched.filter((o) => !term || o.name.toLowerCase().includes(term)), ...others.slice(0, 50)];
+  })();
   const setBreakdown = (index, change) => {
     setSaved(false);
     setDraft((d) => ({ ...d, breakdowns: d.breakdowns.map((b, i) => (i === index ? { ...b, ...change } : b)) }));
@@ -99,6 +110,67 @@ function App() {
             value={Array.isArray(draft.placeholders) ? draft.placeholders.join('\n') : (draft.placeholders ?? DEFAULT_PLACEHOLDERS.join('\n'))}
             onChange={(e) => { setSaved(false); setDraft((d) => ({ ...d, placeholders: e.target.value })); }} />
         </Field>
+      </Card>
+
+      <Card title="Spike alerts" description="Once a day, compare each watched organisation’s last 7 days with the 7 before. Patterns that jump show as alerts in Customer Insights.">
+        <div className="nq-stack">
+          <label className="cs-check">
+            <input type="checkbox" className="nq-check" checked={alerts.enabled} onChange={(e) => setAlerts({ enabled: e.target.checked })} />
+            <span>Check for spikes every day</span>
+          </label>
+          {alerts.enabled && <>
+            <Field label={`Organisations to watch (${alerts.organizations.length} of ${MAX_WATCHED})`} htmlFor="cs-org-filter">
+              <input id="cs-org-filter" className="nq-input" placeholder="Filter organisations" value={orgFilter} onChange={(e) => setOrgFilter(e.target.value)} />
+            </Field>
+            <div className="cs-orgs" role="group" aria-label="Organisations to watch">
+              {shownOrgs.map((o) => {
+                const checked = alerts.organizations.some((w) => w.id === o.id);
+                return <label className="cs-check" key={o.id}>
+                  <input type="checkbox" className="nq-check" checked={checked} disabled={!checked && alerts.organizations.length >= MAX_WATCHED}
+                    onChange={(e) => setAlerts({ organizations: e.target.checked ? [...alerts.organizations, o] : alerts.organizations.filter((w) => w.id !== o.id) })} />
+                  <span>{o.name}</span>
+                </label>;
+              })}
+              {!shownOrgs.length && <p className="nq-muted">No organisations match.</p>}
+            </div>
+            <div className="cs-row cs-row--pair">
+              <Field label="Alert when a pattern is up by (%)" htmlFor="cs-threshold" help={`${ALERT_LIMITS.threshold.min}–${ALERT_LIMITS.threshold.max}%, against the week before. New patterns count too.`}>
+                <input id="cs-threshold" className="nq-input cs-number" type="number" min={ALERT_LIMITS.threshold.min} max={ALERT_LIMITS.threshold.max}
+                  value={alerts.thresholdPercent} onChange={(e) => setAlerts({ thresholdPercent: Number(e.target.value) })} />
+              </Field>
+              <Field label="And has at least (tickets)" htmlFor="cs-min-tickets" help={`${ALERT_LIMITS.minTickets.min}–${ALERT_LIMITS.minTickets.max} tickets in the last 7 days.`}>
+                <input id="cs-min-tickets" className="nq-input cs-number" type="number" min={ALERT_LIMITS.minTickets.min} max={ALERT_LIMITS.minTickets.max}
+                  value={alerts.minTickets} onChange={(e) => setAlerts({ minTickets: Number(e.target.value) })} />
+              </Field>
+            </div>
+            <label className="cs-check">
+              <input type="checkbox" className="nq-check" checked={alerts.createIssue} onChange={(e) => setAlerts({ createIssue: e.target.checked })} />
+              <span>Also create a Jira ticket for each alert</span>
+            </label>
+            {alerts.createIssue && <>
+              <div className="cs-row cs-row--pair">
+                <Field label="Project key" htmlFor="cs-alert-project">
+                  <input id="cs-alert-project" className="nq-input" placeholder="e.g. SD" maxLength={50} value={alerts.projectKey}
+                    onChange={(e) => setAlerts({ projectKey: e.target.value.toUpperCase(), issueTypeId: '' })} />
+                </Field>
+                <Field label="Issue type" htmlFor="cs-alert-type">
+                  <input id="cs-alert-type" className="nq-input" placeholder="e.g. Task" maxLength={60} value={alerts.issueTypeName}
+                    onChange={(e) => setAlerts({ issueTypeName: e.target.value, issueTypeId: '' })} />
+                </Field>
+              </div>
+              <p className="nq-muted">Tickets are created by the Customer Insights app user, labelled <code>customer-insights-spike</code>. It needs permission to create issues in that project; the project and issue type are checked when you save.</p>
+            </>}
+            <div className="nq-spread">
+              <span className="nq-muted">{checkNote || 'Checks run once a day. New alerts show at the top of Customer Insights.'}</span>
+              <Button small disabled={dirty || !state.settings?.alerts?.enabled || !state.settings?.alerts?.organizations?.length}
+                onClick={async () => {
+                  setCheckNote('Queuing…');
+                  try { const { queued } = await invoke('checkAlertsNow'); setCheckNote(`Checking ${queued} organisation${queued === 1 ? '' : 's'} now. Alerts appear within a few minutes.`); }
+                  catch (e) { setCheckNote(e.message || 'The check couldn’t be started.'); }
+                }}>Check now</Button>
+            </div>
+          </>}
+        </div>
       </Card>
 
       <Card title="Customer portal" description="Let Jira admins and project admins publish reviewed reports that customers see under “Service report” in the portal.">

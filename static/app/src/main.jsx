@@ -9,6 +9,7 @@ import { localIso, matchPreset, presetRange, PRESETS } from '../../../src/dates.
 import { analyseEveryTicket, Cancelled, FULL_LIMIT } from './fullAnalysis.js';
 import { applyMerges, median, patternTrend, topShares } from '../../../src/analysis.js';
 import { jqlClause, jqlEmptyClause } from '../../../src/settings.js';
+import { changeText } from '../../../src/alertText.js';
 import './styles.css';
 
 enableTheme(view);
@@ -108,6 +109,8 @@ function App() {
   const [aiStep, setAiStep] = useState('');
   const [filter, setFilter] = useState(null); // drill-down: { id, label, value }
   const [siteUrl, setSiteUrl] = useState('');
+  const [alerts, setAlerts] = useState([]);
+  const [pendingRun, setPendingRun] = useState(null);
 
   useEffect(() => {
     view.getContext().then((context) => setSiteUrl(String(context?.siteUrl || '').replace(/\/$/, ''))).catch(() => {});
@@ -121,9 +124,29 @@ function App() {
       setLicensed(result?.licensed !== false);
       setOrgs(list);
       if (list.length) setOrganizationId(String(list[0].id));
+      if (result?.licensed !== false) invoke('getAlerts').then((a) => setAlerts(a?.alerts || [])).catch(() => {});
     }).catch((e) => setError(e.message || 'Could not load customer organisations.'))
       .finally(() => setLoadingOrgs(false));
   }, []);
+
+  // "Analyse" on an alert fills in the form; the run starts once the choices apply.
+  useEffect(() => {
+    if (pendingRun && selectedOrg?.id === pendingRun.orgId && from === pendingRun.from && to === pendingRun.to) {
+      setPendingRun(null);
+      runAnalysis();
+    }
+  });
+
+  function analyseAlert(alert) {
+    if (!orgs.some((o) => o.id === alert.organization.id)) return;
+    setOrganizationId(alert.organization.id); setFrom(alert.window.from); setTo(alert.window.to); setProjectsText('');
+    setPendingRun({ orgId: alert.organization.id, from: alert.window.from, to: alert.window.to });
+  }
+
+  async function dismissAlert(alert) {
+    setAlerts((list) => list.filter((a) => a.id !== alert.id));
+    try { await invoke('dismissAlert', { id: alert.id }); } catch (e) { setError(e.message || 'The alert couldn’t be dismissed.'); }
+  }
 
   const selectedOrg = orgs.find((org) => org.id === organizationId);
   const projects = projectsText.split(/[\s,]+/).map((x) => x.trim().toUpperCase()).filter(Boolean);
@@ -320,6 +343,27 @@ function App() {
     {!licensed && <Notice kind="warning" title="Customer Insights isn’t licensed on this site">
       Analysis is unavailable until the app has an active Marketplace licence. Ask a Jira admin to check it in Manage apps.
     </Notice>}
+
+    {licensed && alerts.length > 0 && <Card
+      title={<>Spike alerts <span className="nq-pill nq-pill--neutral">{alerts.length}</span></>}
+      description="Patterns that jumped in a watched organisation’s last 7 days, against the 7 before. Checked once a day."
+    >
+      <ul className="ci-alerts">{alerts.map((alert) => <li key={alert.id}>
+        <div className="ci-alerts__text">
+          <strong>{alert.organization.name}: {alert.theme}</strong>
+          <span className="nq-muted">{changeText(alert)} · {new Date(`${alert.window.from}T00:00:00`).toLocaleDateString()} to {new Date(`${alert.window.to}T00:00:00`).toLocaleDateString()}</span>
+          <span className="ci-alerts__links">
+            {alert.keys?.length > 0 && <JiraLink href={jiraSearch(`key in (${alert.keys.slice(0, MAX_LINK_KEYS).join(', ')}) ORDER BY created DESC`)}>Open {Math.min(alert.keys.length, MAX_LINK_KEYS)} tickets in Jira</JiraLink>}
+            {alert.issueKey && <> · Ticket <JiraLink href={siteUrl ? `${siteUrl}/browse/${alert.issueKey}` : ''}>{alert.issueKey}</JiraLink></>}
+            {alert.issueError && <> · <Lozenge kind="warning">Ticket not created</Lozenge> <span className="nq-muted">{alert.issueError}</span></>}
+          </span>
+        </div>
+        <div className="ci-alerts__actions">
+          <Button small onClick={() => analyseAlert(alert)} disabled={loadingReport || !orgs.some((o) => o.id === alert.organization.id)}>Analyse</Button>
+          <Button small appearance="subtle" onClick={() => dismissAlert(alert)}>Dismiss</Button>
+        </div>
+      </li>)}</ul>
+    </Card>}
 
     {licensed && <Card>
       <form className="nq-filters ci-filters" onSubmit={runAnalysis}>

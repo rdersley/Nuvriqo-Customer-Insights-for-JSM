@@ -75,6 +75,8 @@ app:
 permissions:
   scopes:
     - read:jira-work
+    # Spike alert tickets (src/alerts.js), only when an admin switches them on
+    - write:jira-work
     - read:servicedesk-request
     # GET /rest/servicedeskapi/organization (organisation picker)
     - read:organization:jira-service-management

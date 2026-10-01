@@ -70,3 +70,42 @@ export async function saveSettings(settings) {
   await (await kvs()).set(SETTINGS_KEY, settings);
   return settings;
 }
+
+// Spike alerts (src/alerts.js): one key per alert, and per-organisation check state.
+const alertKey = (id) => `alert:${String(id).replace(/[^0-9a-z-]/gi, '')}`;
+const alertStateKey = (orgId) => `alert-state:${String(orgId).replace(/\D/g, '')}`;
+
+export async function loadAlertState(orgId) {
+  return (await (await kvs()).get(alertStateKey(orgId))) || {};
+}
+
+export async function saveAlertState(orgId, state) {
+  await (await kvs()).set(alertStateKey(orgId), state);
+}
+
+export async function saveAlert(alert) {
+  await (await kvs()).set(alertKey(alert.id), alert);
+}
+
+export async function loadAlert(id) {
+  return (await (await kvs()).get(alertKey(id))) || null;
+}
+
+export async function deleteAlert(id) {
+  await (await kvs()).delete(alertKey(id));
+}
+
+/** Every stored alert, newest first. */
+export async function listAlerts() {
+  const { kvs: store, WhereConditions } = await import('@forge/kvs');
+  const alerts = [];
+  let cursor;
+  do {
+    let query = store.query().where('key', WhereConditions.beginsWith('alert:')).limit(50);
+    if (cursor) query = query.cursor(cursor);
+    const page = await query.getMany();
+    alerts.push(...page.results.map((r) => r.value));
+    cursor = page.nextCursor;
+  } while (cursor);
+  return alerts.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
+}

@@ -8,7 +8,52 @@ export const MIN_PATTERN = { min: 2, max: 10, default: 3 };
 // Breakdown values that mean "nobody filled this in". Admins can change the list.
 export const DEFAULT_PLACEHOLDERS = ['Unknown', 'Please update', 'Please select', 'N/A', 'None', 'Not set', 'TBC', 'TBD', '-'];
 export const MAX_PLACEHOLDERS = 30;
-export const DEFAULT_SETTINGS = { breakdowns: [], portalEnabled: true, minPatternSize: MIN_PATTERN.default, placeholders: DEFAULT_PLACEHOLDERS };
+// Spike alerts (src/alerts.js). Off until an admin turns them on; creating a
+// Jira ticket per alert is a separate switch.
+export const MAX_WATCHED = 25;
+export const ALERT_LIMITS = { threshold: { min: 20, max: 500, default: 50 }, minTickets: { min: 3, max: 200, default: 5 } };
+export const DEFAULT_ALERTS = {
+  enabled: false,
+  organizations: [],
+  thresholdPercent: ALERT_LIMITS.threshold.default,
+  minTickets: ALERT_LIMITS.minTickets.default,
+  createIssue: false,
+  projectKey: '',
+  issueTypeName: 'Task',
+  issueTypeId: '',
+};
+export const DEFAULT_SETTINGS = { breakdowns: [], portalEnabled: true, minPatternSize: MIN_PATTERN.default, placeholders: DEFAULT_PLACEHOLDERS, alerts: DEFAULT_ALERTS };
+
+const whole = (value, { min, max, default: fallback }) => {
+  const n = Number(value);
+  return Number.isInteger(n) && n >= min && n <= max ? n : fallback;
+};
+
+/**
+ * Validates alert settings. `organizations` are the ones the admin can see
+ * ({ id, name }); only those can be watched, and names come from Jira, not
+ * the page. The issue type id is resolved on the server when saving.
+ */
+export function sanitizeAlerts(input, organizations = []) {
+  const known = new Map(organizations.map((o) => [String(o.id), o]));
+  const seen = new Set();
+  const watched = (Array.isArray(input?.organizations) ? input.organizations : [])
+    .map((o) => known.get(String(o?.id ?? o)))
+    .filter((o) => o && !seen.has(o.id) && seen.add(o.id))
+    .slice(0, MAX_WATCHED)
+    .map(({ id, name }) => ({ id: String(id), name: String(name) }));
+  const projectKey = String(input?.projectKey ?? '').trim().toUpperCase();
+  return {
+    enabled: input?.enabled === true,
+    organizations: watched,
+    thresholdPercent: whole(input?.thresholdPercent, ALERT_LIMITS.threshold),
+    minTickets: whole(input?.minTickets, ALERT_LIMITS.minTickets),
+    createIssue: input?.createIssue === true,
+    projectKey: /^[A-Z][A-Z0-9_]{0,49}$/.test(projectKey) ? projectKey : '',
+    issueTypeName: String(input?.issueTypeName ?? '').replace(/\s+/g, ' ').trim().slice(0, 60) || 'Task',
+    issueTypeId: /^\d{1,18}$/.test(String(input?.issueTypeId ?? '')) ? String(input.issueTypeId) : '',
+  };
+}
 
 /** Placeholder values from a list or comma/new-line separated text; trimmed, unique, bounded. */
 export function placeholderList(input) {
@@ -71,14 +116,14 @@ export function selectableFields(fields) {
 }
 
 /** Validates settings from the admin page against the site's selectable fields. */
-export function sanitizeSettings(input, selectable) {
+export function sanitizeSettings(input, selectable, organizations = []) {
   const byId = new Map(selectable.map((f) => [f.id, f]));
   const seen = new Set();
   const breakdowns = (Array.isArray(input?.breakdowns) ? input.breakdowns : [])
     .map((b) => byId.get(String(b?.id)) && { ...byId.get(String(b.id)), label: clip(b.label, 40) || byId.get(String(b.id)).name })
     .filter((b) => b && !seen.has(b.id) && seen.add(b.id))
     .slice(0, MAX_BREAKDOWNS);
-  return { breakdowns, portalEnabled: input?.portalEnabled !== false, minPatternSize: patternMinimum(input?.minPatternSize), placeholders: placeholderList(input?.placeholders) };
+  return { breakdowns, portalEnabled: input?.portalEnabled !== false, minPatternSize: patternMinimum(input?.minPatternSize), placeholders: placeholderList(input?.placeholders), alerts: sanitizeAlerts(input?.alerts, organizations) };
 }
 
 const quote = (v) => `"${String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
