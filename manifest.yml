@@ -5,8 +5,10 @@ modules:
       resolver:
         function: resolver
       title: Customer Insights
-  # Settings (Jira settings → Apps, and "Configure" in Manage apps). Jira
-  # admins only; checked again on the server.
+  # Settings. Jira admins only; checked again on the server. Two entries for
+  # one page: a useAsConfig page only appears behind "Configure" (now in
+  # Administration > Connected apps), so a plain entry also lists it in the
+  # Jira settings > Apps sidebar like other apps.
   jira:adminPage:
     - key: customer-insights-settings
       title: Customer Insights
@@ -14,6 +16,12 @@ modules:
       resolver:
         function: resolver
       useAsConfig: true
+    - key: customer-insights-settings-menu
+      title: Customer Insights
+      resource: settings
+      resolver:
+        function: resolver
+      layout: blank
   # Published reports for portal customers. Own function (src/portal.js) so
   # customers can't reach the agent resolvers.
   jiraServiceManagement:portalUserMenuAction:
