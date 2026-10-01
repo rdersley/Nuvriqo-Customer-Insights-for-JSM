@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildReport, chartBuckets, groupIssues, median, mergeGroups, tokenize, topShares } from '../src/analysis.js';
+import { buildDataQuality, buildReport, chartBuckets, groupIssues, median, mergeGroups, patternTrend, tokenize, topShares } from '../src/analysis.js';
 
 function issue(key, summary, created, description = '') {
   return {
@@ -234,4 +234,59 @@ test('handles Jira rich text descriptions', () => {
     issue('SD-2', 'Network issue at gate', '2026-09-11T10:00:00Z', { content: [{ text: 'airport wifi disconnected' }] }),
   ];
   assert.equal(groupIssues(issues).length, 1);
+});
+
+test('each pattern has a trend per chart bucket, and merged patterns add theirs up', () => {
+  const issues = [
+    issue('SD-1', 'Pin pad pairing fails', '2026-09-01T10:00:00Z'),
+    issue('SD-2', 'Pin pad pairing fails', '2026-09-01T12:00:00Z'),
+    issue('SD-3', 'Pin pad pairing fails', '2026-09-03T10:00:00Z'),
+    issue('SD-4', 'Printer paper order', '2026-09-03T11:00:00Z'),
+  ];
+  const report = buildReport(issues, '2026-09-01', '2026-09-03');
+  const trend = patternTrend(report.groups[0], report);
+  assert.deepEqual(trend.map((p) => p.count), [2, 0, 1]);
+  assert.deepEqual(report.bucketSamples, [2, 0, 2]);
+  const merged = mergeGroups([{ ...report.groups[0], theme: 'a' }, { ...report.groups[0], id: 'x', theme: 'a' }], (g) => g.theme);
+  assert.deepEqual(merged[0].buckets, [4, 0, 2]);
+  assert.equal(patternTrend({ buckets: [1] }, report), null);
+});
+
+test('a sampled pattern trend uses its share of each bucket, scaled to the exact counts', () => {
+  // The sample has 2 of 4 tickets in bucket one and 1 of 1 in bucket two; Jira says 40 and 10.
+  const report = { timeSeries: [{ date: 'a', count: 40 }, { date: 'b', count: 10 }], bucketSamples: [4, 1] };
+  assert.deepEqual(patternTrend({ buckets: [2, 1] }, report).map((p) => p.count), [20, 10]);
+});
+
+test('data quality counts empty and placeholder values per field, with examples', () => {
+  const at = (key, created, base) => ({ ...issue(key, `Ticket ${key}`, created), dims: base ? { base: [base] } : {} });
+  const current = [
+    at('SD-1', '2026-09-01T10:00:00Z', 'STN'),
+    at('SD-2', '2026-09-02T10:00:00Z', 'Unknown'),
+    at('SD-3', '2026-09-03T10:00:00Z', ' please  UPDATE '),
+    at('SD-4', '2026-09-04T10:00:00Z', null),
+  ];
+  const [base] = buildDataQuality([{ id: 'base', label: 'Base', kind: 'option' }], current, 10, ['Unknown', 'Please update']);
+  assert.equal(base.missing, 10);
+  assert.equal(base.problemCount, 30);
+  assert.equal(base.share, 75);
+  assert.equal(base.estimated, true);
+  assert.deepEqual(base.placeholders.map((p) => p.count), [10, 10]);
+  assert.deepEqual(base.examples.map((e) => e.key), ['SD-4', 'SD-3', 'SD-2']);
+  assert.equal(base.examples[1].value, ' please  UPDATE ');
+});
+
+test('trend words compare tickets per day in each half of the period', async () => {
+  const { trendWord, duration } = await import('../src/trend.js');
+  const pts = (counts, days = 7) => counts.map((count, i) => ({ date: `d${i}`, count, days }));
+  assert.equal(trendWord(pts([0, 0, 3, 5])), 'New');
+  assert.equal(trendWord(pts([2, 2, 5, 6])), 'Rising');
+  assert.equal(trendWord(pts([6, 5, 2, 1])), 'Fading');
+  assert.equal(trendWord(pts([4, 4, 4, 4])), 'Steady');
+  // A 1-day last week isn't a fall.
+  assert.equal(trendWord([...pts([7, 7, 7]), { date: 'x', count: 1, days: 1 }]), 'Steady');
+  assert.equal(trendWord(pts([1, 0, 1])), '');
+  assert.equal(duration(5.55), '5.6 h');
+  assert.equal(duration(50), '2.1 days');
+  assert.equal(duration(null), '–');
 });

@@ -7,8 +7,10 @@ import { AppHeader, Button, Card, EmptyState, Field, Footer, Kpi, Loading, Lozen
 import { version } from '../../../package.json';
 import { localIso, matchPreset, presetRange, PRESETS } from '../../../src/dates.js';
 import { analyseEveryTicket, Cancelled, FULL_LIMIT } from './fullAnalysis.js';
-import { applyMerges, median, topShares } from '../../../src/analysis.js';
-import { jqlClause } from '../../../src/settings.js';
+import { applyMerges, median, patternTrend, topShares } from '../../../src/analysis.js';
+import { jqlClause, jqlEmptyClause } from '../../../src/settings.js';
+import { changeText } from '../../../src/alertText.js';
+import { duration, sparkPath, trendWord } from '../../../src/trend.js';
 import './styles.css';
 
 enableTheme(view);
@@ -18,14 +20,6 @@ const DEFAULT_RANGE = presetRange('last-30');
 const presetLabel = (key) => PRESETS.find((p) => p.key === key)?.label || key;
 const signed = (n) => `${n > 0 ? '+' : ''}${n}`;
 const MAX_LINK_KEYS = 150; // keeps "Open in Jira" URLs a sensible length
-
-/** 5.5 hours -> "5.5 h"; 50 hours -> "2.1 days". */
-function duration(hours) {
-  if (hours === null || hours === undefined) return '–';
-  if (hours < 24) return `${hours < 10 ? Math.round(hours * 10) / 10 : Math.round(hours)} h`;
-  const days = hours / 24;
-  return `${days < 10 ? Math.round(days * 10) / 10 : Math.round(days)} days`;
-}
 
 const resolutionText = ({ medianHours, openShare }) => [
   medianHours !== null && medianHours !== undefined ? `median ${duration(medianHours)} to resolve` : 'none resolved yet',
@@ -40,6 +34,15 @@ function TrendLozenge({ group }) {
   return <Lozenge>→ 0</Lozenge>;
 }
 
+/** A small line of a pattern's tickets per chart bucket. */
+function Sparkline({ points, unit }) {
+  if (!points || points.length < 2) return null;
+  const label = `Tickets per ${unit}: ${points.map((p) => p.count).join(', ')}`;
+  return <svg className="ci-spark" viewBox="0 0 72 18" width={72} height={18} role="img" aria-label={label}>
+    <title>{label}</title>
+    <path d={sparkPath(points, 72, 18)} />
+  </svg>;
+}
 
 // Links out of the app go through Forge's router: a plain target="_blank" link
 // in the app's iframe isn't reliable.
@@ -74,6 +77,8 @@ function App() {
   const [aiStep, setAiStep] = useState('');
   const [filter, setFilter] = useState(null); // drill-down: { id, label, value }
   const [siteUrl, setSiteUrl] = useState('');
+  const [alerts, setAlerts] = useState([]);
+  const [pendingRun, setPendingRun] = useState(null);
 
   useEffect(() => {
     view.getContext().then((context) => setSiteUrl(String(context?.siteUrl || '').replace(/\/$/, ''))).catch(() => {});
@@ -87,9 +92,29 @@ function App() {
       setLicensed(result?.licensed !== false);
       setOrgs(list);
       if (list.length) setOrganizationId(String(list[0].id));
+      if (result?.licensed !== false) invoke('getAlerts').then((a) => setAlerts(a?.alerts || [])).catch(() => {});
     }).catch((e) => setError(e.message || 'Could not load customer organisations.'))
       .finally(() => setLoadingOrgs(false));
   }, []);
+
+  // "Analyse" on an alert fills in the form; the run starts once the choices apply.
+  useEffect(() => {
+    if (pendingRun && selectedOrg?.id === pendingRun.orgId && from === pendingRun.from && to === pendingRun.to) {
+      setPendingRun(null);
+      runAnalysis();
+    }
+  });
+
+  function analyseAlert(alert) {
+    if (!orgs.some((o) => o.id === alert.organization.id)) return;
+    setOrganizationId(alert.organization.id); setFrom(alert.window.from); setTo(alert.window.to); setProjectsText('');
+    setPendingRun({ orgId: alert.organization.id, from: alert.window.from, to: alert.window.to });
+  }
+
+  async function dismissAlert(alert) {
+    setAlerts((list) => list.filter((a) => a.id !== alert.id));
+    try { await invoke('dismissAlert', { id: alert.id }); } catch (e) { setError(e.message || 'The alert couldn’t be dismissed.'); }
+  }
 
   const selectedOrg = orgs.find((org) => org.id === organizationId);
   const projects = projectsText.split(/[\s,]+/).map((x) => x.trim().toUpperCase()).filter(Boolean);
@@ -237,10 +262,14 @@ function App() {
     if (!report) return;
     const rows = [['Customer', report.organization], ['Period', `${report.startDate} to ${report.endDate}`]];
     if (ai?.overview) rows.push(['AI overview', ai.overview]);
-    rows.push([], ['Pattern', 'AI name', 'Ticket count', 'Previous period', 'Change', 'Example ticket']);
-    groups.forEach((group, index) => rows.push([group.theme, aiPattern(index)?.title || '', group.count, group.previousCount, group.changePercent === null ? 'New' : `${group.changePercent}%`, group.tickets[0]?.key || '']));
+    rows.push([], ['Pattern', 'AI name', 'Ticket count', 'Previous period', 'Change', 'Trend', 'Example ticket']);
+    groups.forEach((group, index) => rows.push([group.theme, aiPattern(index)?.title || '', group.count, group.previousCount, group.changePercent === null ? 'New' : `${group.changePercent}%`, trendWord(patternTrend(group, report)), group.tickets[0]?.key || '']));
     rows.push([], ['Date bucket', 'Tickets']);
     for (const point of report.timeSeries) rows.push([point.date, point.count]);
+    if (qualityIssues.length) {
+      rows.push([], ['Data quality: field', 'Tickets with no real value', 'Share', 'No value', 'Placeholders']);
+      for (const d of qualityIssues) rows.push([d.label, d.problemCount, `${d.share}%`, d.missing, d.placeholders.map((p) => `${p.value} (${p.count})`).join('; ')]);
+    }
     const csv = rows.map((r) => r.map((cell) => `"${String(cell ?? '').replaceAll('"', '""')}"`).join(',')).join('\n');
     const link = document.createElement('a');
     link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
@@ -257,10 +286,11 @@ function App() {
     const keys = (group.keys || group.tickets.map((t) => t.key)).slice(0, MAX_LINK_KEYS);
     return jiraSearch(keys.length ? `key in (${keys.join(', ')}) ORDER BY created DESC` : '');
   };
-  const valueLink = (field, value) => {
-    const clause = jqlClause(field, value);
-    return clause && report?.baseJql ? jiraSearch(`${report.baseJql} AND ${clause} ORDER BY created DESC`) : '';
-  };
+  // The period's tickets narrowed by a field condition.
+  const periodLink = (clause) => (clause && report?.baseJql ? jiraSearch(`${report.baseJql} AND ${clause} ORDER BY created DESC`) : '');
+  const valueLink = (field, value) => periodLink(jqlClause(field, value));
+  const qualityIssues = (report?.dataQuality || []).filter((d) => d.problemCount > 0);
+  const bucketUnit = report && (Date.parse(report.endDate) - Date.parse(report.startDate)) / 86400000 < 35 ? 'day' : 'week';
   const canDrill = (field, value) => Boolean(jqlClause(field, value));
   const drill = (field, value) => runAnalysis(null, { id: field.id, label: field.label, value });
   const groupResolution = (group) => {
@@ -281,6 +311,27 @@ function App() {
     {!licensed && <Notice kind="warning" title="Customer Insights isn’t licensed on this site">
       Analysis is unavailable until the app has an active Marketplace licence. Ask a Jira admin to check it in Manage apps.
     </Notice>}
+
+    {licensed && alerts.length > 0 && <Card
+      title={<>Spike alerts <span className="nq-pill nq-pill--neutral">{alerts.length}</span></>}
+      description="Patterns that jumped in a watched organisation’s last 7 days, against the 7 before. Checked once a day."
+    >
+      <ul className="ci-alerts">{alerts.map((alert) => <li key={alert.id}>
+        <div className="ci-alerts__text">
+          <strong>{alert.organization.name}: {alert.theme}</strong>
+          <span className="nq-muted">{changeText(alert)} · {new Date(`${alert.window.from}T00:00:00`).toLocaleDateString()} to {new Date(`${alert.window.to}T00:00:00`).toLocaleDateString()}</span>
+          <span className="ci-alerts__links">
+            {alert.keys?.length > 0 && <JiraLink href={jiraSearch(`key in (${alert.keys.slice(0, MAX_LINK_KEYS).join(', ')}) ORDER BY created DESC`)}>Open {Math.min(alert.keys.length, MAX_LINK_KEYS)} tickets in Jira</JiraLink>}
+            {alert.issueKey && <> · Ticket <JiraLink href={siteUrl ? `${siteUrl}/browse/${alert.issueKey}` : ''}>{alert.issueKey}</JiraLink></>}
+            {alert.issueError && <> · <Lozenge kind="warning">Ticket not created</Lozenge> <span className="nq-muted">{alert.issueError}</span></>}
+          </span>
+        </div>
+        <div className="ci-alerts__actions">
+          <Button small onClick={() => analyseAlert(alert)} disabled={loadingReport || !orgs.some((o) => o.id === alert.organization.id)}>Analyse</Button>
+          <Button small appearance="subtle" onClick={() => dismissAlert(alert)}>Dismiss</Button>
+        </div>
+      </li>)}</ul>
+    </Card>}
 
     {licensed && <Card>
       <form className="nq-filters ci-filters" onSubmit={runAnalysis}>
@@ -415,6 +466,36 @@ function App() {
         })}</div>
         : <p className="nq-muted">Tip: a Jira admin can add breakdowns by base, device type or any other field in <strong>Jira settings → Apps → Customer Insights</strong>.</p>}
 
+      {qualityIssues.length > 0 && <Card
+        title="Data quality"
+        description={`Breakdown fields left empty or set to a placeholder such as “Unknown”. ${qualityIssues.some((d) => d.estimated) ? 'Estimated from the sample.' : 'All tickets in the period.'}`}
+      >
+        <ul className="ci-quality">{qualityIssues.map((d) => {
+          const field = report.breakdownFields?.find((f) => f.id === d.id) || d;
+          const approx = d.estimated ? '≈' : '';
+          const parts = [
+            d.missing > 0 && { key: 'none', text: `No value: ${approx}${d.missing.toLocaleString()}`, href: periodLink(jqlEmptyClause(field)) },
+            ...d.placeholders.map((p) => ({ key: p.value, text: `${p.value}: ${approx}${p.count.toLocaleString()}`, href: periodLink(jqlClause(field, p.value)) })),
+          ].filter(Boolean);
+          return <li key={d.id}>
+            <div className="nq-spread">
+              <strong>{d.label}</strong>
+              <span><strong>{d.share}%</strong> of tickets ({approx}{d.problemCount.toLocaleString()}) have no real {d.label}</span>
+            </div>
+            <span className="ci-meter ci-meter--warning"><i style={{ width: `${Math.max(2, d.share)}%` }} /></span>
+            <p className="nq-muted ci-quality__parts">{parts.map((part, i) => <React.Fragment key={part.key}>
+              {i > 0 && ' · '}
+              {part.href ? <JiraLink href={part.href}>{part.text}</JiraLink> : part.text}
+            </React.Fragment>)}</p>
+            {d.examples.length > 0 && <ul className="ci-quality__examples">{d.examples.map((e) => <li key={e.key}>
+              <JiraLink className="nq-table__key" href={ticketLink(e)}>{e.key}</JiraLink>
+              <span>{e.summary}</span>
+              <span className="nq-muted">{e.value || 'no value'}</span>
+            </li>)}</ul>}
+          </li>;
+        })}</ul>
+      </Card>}
+
       <Card
         title={<>Issue patterns <span className="nq-pill nq-pill--neutral">{groups.length}</span></>}
         description="Repeated customer issues, with ticket evidence"
@@ -456,13 +537,19 @@ function App() {
                 {aiPattern(index)?.summary || group.sampleSummary}
                 {whereOf(group) && <em className="ci-where">{whereOf(group)}</em>}
               </span>
-              <span className="ci-meter"><i style={{ width: `${Math.max(8, (group.count / maxGroup) * 100)}%` }} /></span>
+              <span className="ci-pattern__volume">
+                <Sparkline points={patternTrend(group, report)} unit={bucketUnit} />
+                <span className="ci-meter"><i style={{ width: `${Math.max(8, (group.count / maxGroup) * 100)}%` }} /></span>
+              </span>
               <span className="ci-pattern__count" title={group.estimated ? `${group.sampleCount} in the sample` : undefined}>{group.estimated ? '≈' : ''}{group.count}</span>
               <TrendLozenge group={group} />
               <span className="ci-pattern__chevron" aria-hidden="true">›</span>
             </summary>
             <div className="nq-spread ci-pattern__meta">
-              <span className="nq-muted">{resolutionText(groupResolution(group))}{group.estimated ? ' (from the sample)' : ''}</span>
+              <span className="nq-muted">
+                {trendWord(patternTrend(group, report)) && <>{trendWord(patternTrend(group, report))} through the period · </>}
+                {resolutionText(groupResolution(group))}{group.estimated ? ' (from the sample)' : ''}
+              </span>
               {patternLink(group) && <JiraLink href={patternLink(group)}>
                 {(() => {
                   const n = Math.min((group.keys || group.tickets).length, MAX_LINK_KEYS);
@@ -517,7 +604,12 @@ function App() {
           </Notice>}
         </div>}
         {draft && <div className="nq-stack">
-          <Notice>Customers see these names, descriptions and counts. They don’t see ticket keys, titles or who raised them. {ai ? '' : 'Run the AI summary first for suggested names and a summary.'}</Notice>
+          <Notice>
+            Customers see your names, descriptions, summary and next steps. Customer Insights then builds the rest from {report.organization}’s own tickets:
+            counts, trends, time to resolve, the newest example tickets for each issue (only tickets shared with {report.organization}, linking to their portal
+            request), and the breakdowns an admin marked “Show on portal”. Data quality, alerts and other organisations are never shown.
+            {ai ? '' : ' Run the AI summary first for suggested names and a summary.'}
+          </Notice>
           <div className="ci-draft">
             {draft.patterns.map((p, index) => <div className="ci-draft__row" key={index}>
               <input type="checkbox" className="nq-check" checked={p.include} aria-label={`Include ${p.title}`} onChange={(e) => editPattern(index, { include: e.target.checked })} />
@@ -547,7 +639,8 @@ function App() {
             </Field>}
           </div>
           <div className="nq-inline">
-            <Button appearance="primary" onClick={publish} disabled={publishing || !draft.patterns.some((p) => p.include && p.title.trim())}>{publishing ? 'Publishing…' : 'Publish to portal'}</Button>
+            <Button appearance="primary" onClick={publish} disabled={publishing || Boolean(filter) || !draft.patterns.some((p) => p.include && p.title.trim())}>{publishing ? 'Publishing…' : 'Publish to portal'}</Button>
+            {filter && <span className="nq-muted">Clear the {filter.label} filter first: portal reports cover all of the organisation’s tickets.</span>}
             <Button appearance="subtle" onClick={() => setDraft(null)} disabled={publishing}>Cancel</Button>
           </div>
         </div>}

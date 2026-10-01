@@ -5,9 +5,9 @@ import { filterFor, parseQuery, readJson, runAnalysis, searchPage } from './engi
 import { licenseAllows, UNLICENSED_MESSAGE } from './license.js';
 import { suggestMerges, summarise } from './ai.js';
 import { snapshotFrom } from './publish.js';
-import { deleteLive, deleteReport, loadLiveConfig, loadLiveState, loadReport, loadSettings, saveLiveConfig, saveReport, saveSettings } from './storage.js';
-import { liveConfigFrom } from './live.js';
-import { queueRefresh } from './liveJobs.js';
+import { deleteLive, deleteReport, listAlerts, loadAlert, loadLiveConfig, loadLiveState, loadReport, loadSettings, saveAlert, saveLiveConfig, saveReport, saveSettings } from './storage.js';
+import { isLive, liveConfigFrom } from './live.js';
+import { queueAlertCheck, queueRefresh } from './liveJobs.js';
 import { sanitizeSettings, selectableFields } from './settings.js';
 
 // This package is "type": "module"; Forge's bundler then hands CommonJS packages
@@ -27,9 +27,8 @@ function define(name, fn) {
 const FETCH_BUDGET_MS = 15000;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
-// Unlicensed installs get the flag and nothing else, so the page can explain why.
-define('getOrganizations', async ({ context }) => {
-  if (!licenseAllows(context)) return { licensed: false, organizations: [] };
+/** Organisations the signed-in user can see (up to 500). */
+async function listOrganizations() {
   const organizations = [];
   let start = 0;
   for (let page = 0; page < 10; page += 1) {
@@ -39,7 +38,49 @@ define('getOrganizations', async ({ context }) => {
     if (!data.isLastPage && data.values?.length) start += data.values.length;
     else break;
   }
-  return { licensed: true, organizations };
+  return organizations;
+}
+
+// Unlicensed installs get the flag and nothing else, so the page can explain why.
+define('getOrganizations', async ({ context }) => {
+  if (!licenseAllows(context)) return { licensed: false, organizations: [] };
+  return { licensed: true, organizations: await listOrganizations() };
+});
+
+// ---- Spike alerts (src/alerts.js) --------------------------------------------
+// Alerts are found by a background job reading as the app, so each agent only
+// gets alerts for organisations their own Jira access shows them.
+
+const ALERTS_SHOWN = 20;
+
+define('getAlerts', async ({ context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  const { alerts: config } = await loadSettings();
+  if (!config?.enabled) return { enabled: false, alerts: [] };
+  const [visible, alerts] = await Promise.all([listOrganizations(), listAlerts()]);
+  const ids = new Set(visible.map((o) => o.id));
+  return { enabled: true, alerts: alerts.filter((a) => !a.dismissedAt && ids.has(a.organization.id)).slice(0, ALERTS_SHOWN) };
+});
+
+// Settings page: run the check for every watched organisation now. Jira admins only.
+define('checkAlertsNow', async ({ context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  if (!(await isJiraAdmin())) throw new Error('Only Jira admins can run the spike check.');
+  const { alerts: config } = await loadSettings();
+  if (!config?.enabled || !config.organizations.length) throw new Error('Turn on spike alerts and save at least one organisation first.');
+  for (const organization of config.organizations) await queueAlertCheck(organization.id);
+  console.log(`checkAlertsNow: queued ${config.organizations.length}`);
+  return { queued: config.organizations.length };
+});
+
+define('dismissAlert', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  const alert = await loadAlert(payload?.id);
+  if (!alert) return { dismissed: true };
+  const visible = await listOrganizations();
+  if (!visible.some((o) => o.id === alert.organization.id)) throw new Error('You can’t change alerts for that organisation.');
+  await saveAlert({ ...alert, dismissedAt: new Date().toISOString(), dismissedBy: context?.accountId });
+  return { dismissed: true };
 });
 
 // Full analysis: the page pages through every ticket in date slices and groups
@@ -84,10 +125,10 @@ define('fetchTickets', async ({ payload, context }) => {
 
 define('analyze', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
-  const { breakdowns, minPatternSize } = await loadSettings();
+  const { breakdowns, minPatternSize, placeholders } = await loadSettings();
   const query = parseQuery(payload, filterFor(payload?.filter, breakdowns));
   // Resolvers are killed at 25s; runAnalysis stops starting new fetches after the budget.
-  return runAnalysis(query, { breakdowns, minPatternSize, mode: 'user', budgetMs: FETCH_BUDGET_MS });
+  return runAnalysis(query, { breakdowns, minPatternSize, placeholders, mode: 'user', budgetMs: FETCH_BUDGET_MS });
 });
 
 // Opt-in, separate from analyze so it gets its own time limit. The report comes
@@ -140,9 +181,11 @@ define('getPublication', async ({ payload, context }) => {
   return { portalEnabled: true, canPublish: allowed, published, liveState };
 });
 
-// payload: { snapshot, live: { preset, schedule }, projects }. With a schedule
-// the report becomes live: the approved issues, summary and next steps are
-// kept, and the numbers refresh (first refresh queued straight away).
+// payload: { snapshot, live: { preset, schedule }, projects }. The agent's
+// approved issues, summary and next steps are kept; what customers see (ticket
+// examples, trends, breakdowns) is then built by the app from that
+// organisation's own tickets, straight away and, with a schedule, on it. The
+// page's snapshot (themes and counts only) shows until the build finishes.
 define('publishReport', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
   if (!(await portalEnabled())) throw new Error('Portal reports are switched off on this site.');
@@ -151,23 +194,18 @@ define('publishReport', async ({ payload, context }) => {
   const snapshot = snapshotFrom({ ...payload.snapshot, organization }, { publishedBy: context?.accountId });
   const config = liveConfigFrom({
     ...payload?.live,
+    period: snapshot.period,
     approved: snapshot.patterns.filter((p) => p.title !== 'Other requests'),
     overview: snapshot.overview,
     actions: snapshot.actions,
   }, { organization, projects: payload?.projects });
-  if (config) {
-    snapshot.live = { preset: config.preset, schedule: config.schedule };
-    config.publishedAt = snapshot.publishedAt;
-    config.summaryWrittenAt = snapshot.summaryWrittenAt;
-  }
+  snapshot.live = isLive(config) ? { preset: config.preset, schedule: config.schedule } : null;
+  config.publishedAt = snapshot.publishedAt;
+  config.summaryWrittenAt = snapshot.summaryWrittenAt;
   await saveReport(snapshot);
-  if (config) {
-    await saveLiveConfig(config);
-    await queueRefresh(organization.id, 'published');
-  } else {
-    await deleteLive(organization.id);
-  }
-  console.log(`publishReport: org ${organization.id}, ${snapshot.patterns.length} patterns, live ${config ? `${config.preset}/${config.schedule}` : 'off'}`);
+  await saveLiveConfig(config);
+  await queueRefresh(organization.id, 'published');
+  console.log(`publishReport: org ${organization.id}, ${snapshot.patterns.length} patterns, ${isLive(config) ? `live ${config.preset}/${config.schedule}` : `one-off ${config.period.from}..${config.period.to}`}`);
   return snapshot;
 });
 
@@ -175,7 +213,7 @@ define('refreshLiveReport', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
   if (!(await canPublish())) throw new Error('Only Jira admins and project admins can refresh portal reports.');
   const organization = await visibleOrganisation(payload?.orgId);
-  if (!(await loadLiveConfig(organization.id))) throw new Error('This portal report isn’t set to keep up to date.');
+  if (!isLive(await loadLiveConfig(organization.id))) throw new Error('This portal report isn’t set to keep up to date.');
   await queueRefresh(organization.id, 'agent');
   return loadLiveState(organization.id);
 });
@@ -201,14 +239,27 @@ async function siteFields() {
   return selectableFields(await readJson(response, 'Field list'));
 }
 
+/** The id of the alert ticket's issue type, checked against the project. */
+async function alertIssueType({ projectKey, issueTypeName }) {
+  if (!projectKey) throw new Error('Enter the key of the Jira project that alert tickets go to, such as SD.');
+  const response = await asUser().requestJira(route`/rest/api/3/issue/createmeta/${projectKey}/issuetypes?maxResults=100`, { headers: { Accept: 'application/json' } });
+  if (response.status === 404) throw new Error(`Project ${projectKey} wasn’t found, or you can’t create tickets in it.`);
+  const data = await readJson(response, 'Issue types');
+  const types = (data.issueTypes || data.values || []).filter((t) => !t.subtask);
+  const match = types.find((t) => String(t.name).toLowerCase() === issueTypeName.toLowerCase());
+  if (!match) throw new Error(`Project ${projectKey} has no “${issueTypeName}” issue type. Available: ${types.map((t) => t.name).join(', ')}.`);
+  return String(match.id);
+}
+
 define('getSettings', async ({ context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
   if (!(await isJiraAdmin())) return { isAdmin: false };
-  const [settings, fields] = await Promise.all([loadSettings(), siteFields()]);
+  const [settings, fields, organizations] = await Promise.all([loadSettings(), siteFields(), listOrganizations()]);
   return {
     isAdmin: true,
     settings,
     fields,
+    organizations,
     portalForcedOff: String(process.env.PORTAL_REPORTS ?? '').trim().toLowerCase() === 'off',
   };
 });
@@ -216,9 +267,12 @@ define('getSettings', async ({ context }) => {
 define('saveSettings', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
   if (!(await isJiraAdmin())) throw new Error('Only Jira admins can change Customer Insights settings.');
-  const settings = sanitizeSettings(payload?.settings, await siteFields());
+  const [fields, organizations] = await Promise.all([siteFields(), listOrganizations()]);
+  const settings = sanitizeSettings(payload?.settings, fields, organizations);
+  if (settings.alerts.createIssue) settings.alerts.issueTypeId = await alertIssueType(settings.alerts);
   await saveSettings(settings);
-  console.log(`saveSettings: ${settings.breakdowns.length} breakdowns, portal ${settings.portalEnabled ? 'on' : 'off'}`);
+  const { alerts } = settings;
+  console.log(`saveSettings: ${settings.breakdowns.length} breakdowns, portal ${settings.portalEnabled ? 'on' : 'off'}, alerts ${alerts.enabled ? `on (${alerts.organizations.length} orgs, tickets ${alerts.createIssue ? alerts.projectKey : 'off'})` : 'off'}`);
   return settings;
 });
 
