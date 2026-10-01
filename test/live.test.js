@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assignByWords, isDue, liveConfigFrom, liveCounts, livePeriod, nextCustomerRefresh, refreshedSnapshotInput } from '../src/live.js';
+import { assignByWords, isDue, isLive, liveConfigFrom, liveCounts, livePeriod, nextCustomerRefresh, portalBreakdowns, refreshedSnapshotInput } from '../src/live.js';
 import { parseAssignments, assignToApproved } from '../src/ai.js';
 import { portalView, snapshotFrom } from '../src/publish.js';
 
@@ -8,8 +8,11 @@ const now = new Date('2026-09-30T12:00:00Z');
 const org = { id: '42', name: 'Ryanair Crew' };
 const approved = [{ title: 'Open a barset', summary: 'Barset open requests.' }, { title: 'vPOS app freezes', summary: '' }];
 
-test('live config: schedule off means none; bounded and defaulted', () => {
-  assert.equal(liveConfigFrom({ schedule: 'off' }, { organization: org, now }), null);
+test('report config: schedule off keeps the published period; bounded and defaulted', () => {
+  const once = liveConfigFrom({ schedule: 'off', period: { from: '2026-06-01', to: '2026-08-31' } }, { organization: org, now });
+  assert.equal(isLive(once), false);
+  assert.deepEqual(livePeriod(once), { from: '2026-06-01', to: '2026-08-31' });
+  assert.throws(() => liveConfigFrom({ schedule: 'off' }, { organization: org, now }), /Invalid period/);
   const config = liveConfigFrom({ schedule: 'weekly', preset: 'bogus', approved: [...approved, { title: '' }], overview: 'Summary.', actions: ['Do x'] }, { organization: org, projects: ['SD'], now });
   assert.equal(config.preset, 'last-30');
   assert.equal(config.approved.length, 2);
@@ -76,4 +79,50 @@ test('AI assignments are validated and the tool is forced; word matching is the 
   assert.equal(prompt.tool_choice.function.name, 'assign_groups');
   assert.deepEqual(result.assignments, [0, -1]);
   assert.deepEqual(assignByWords([{ theme: 'Open barset' }, { theme: 'vPOS app freezing' }, { theme: 'Printer' }], approved), [0, 1, -1]);
+});
+
+test('customers see each approved issue with its trend, resolution and newest examples; Other has none', () => {
+  const report = {
+    startDate: '2026-09-01', endDate: '2026-09-03', currentCount: 10, previousCount: 4, sampled: false,
+    timeSeries: [{ date: '2026-09-01', count: 4 }, { date: '2026-09-02', count: 3 }, { date: '2026-09-03', count: 3 }],
+    bucketSamples: [4, 3, 3],
+    groups: [
+      { theme: 'Open barset', count: 3, previousCount: 1, sampleCount: 3, buckets: [2, 1, 0], resolvedHours: [2, 4], openCount: 1,
+        tickets: [{ key: 'SD-1', summary: 'Open barset 1', status: 'Open', created: '2026-09-01T10:00:00Z', url: 'https://api.atlassian.com/x' }] },
+      { theme: 'Opening breset', count: 2, previousCount: 0, sampleCount: 2, buckets: [0, 0, 2], resolvedHours: [10], openCount: 1,
+        tickets: [{ key: 'SD-9', summary: 'Opening breset', status: 'Resolved', created: '2026-09-03T10:00:00Z' }] },
+    ],
+  };
+  const { patterns } = liveCounts(report, approved, [0, 0]);
+  const [barset, vpos, other] = patterns;
+  assert.deepEqual(barset.trend.map((t) => t.count), [2, 1, 2]);
+  assert.equal(barset.medianHours, 4);
+  assert.equal(barset.openShare, 40);
+  assert.deepEqual(barset.examples.map((e) => e.key), ['SD-9', 'SD-1']);
+  assert.equal('url' in barset.examples[0], false);
+  assert.deepEqual(vpos.examples, []);
+  assert.equal(other.title, 'Other requests');
+  assert.equal('examples' in other, false);
+});
+
+test('only breakdowns marked Show on portal reach customers, and detailed fields only from the app build', () => {
+  const report = { breakdowns: [{ id: 'base', label: 'Base', values: [{ value: 'STN', count: 4 }] }, { id: 'queue', label: 'Support Queue', values: [{ value: 'L2', count: 4 }] }] };
+  assert.deepEqual(portalBreakdowns(report, [{ id: 'base', portal: true }, { id: 'queue', portal: false }]).map((b) => b.id), ['base']);
+  const input = {
+    organization: org, period: { from: '2026-09-01', to: '2026-09-30' }, totals: { current: 4, previous: 2 },
+    patterns: [{ title: 'Open a barset', count: 4, examples: [
+      { key: 'SD-1', summary: 'Open barset', url: 'https://x.atlassian.net/servicedesk/customer/portal/3/SD-1' },
+      { key: 'SD-2', summary: 'Agent view link', url: 'https://x.atlassian.net/browse/SD-2' },
+      { key: 'not a key', summary: 'dropped' },
+    ] }],
+    breakdowns: portalBreakdowns(report, [{ id: 'base', portal: true }]),
+    resolution: { medianHours: 12.34, openShare: 120 },
+  };
+  const fromPage = snapshotFrom(input, {});
+  assert.equal(JSON.stringify(fromPage).includes('SD-1'), false);
+  assert.equal('breakdowns' in fromPage, false);
+  const built = snapshotFrom(input, { detailed: true });
+  assert.deepEqual(built.patterns[0].examples.map((e) => [e.key, e.url]), [['SD-1', 'https://x.atlassian.net/servicedesk/customer/portal/3/SD-1'], ['SD-2', '']]);
+  assert.deepEqual(built.breakdowns.map((b) => b.label), ['Base']);
+  assert.deepEqual(built.resolution, { medianHours: 12.3, openShare: 100 });
 });

@@ -275,3 +275,18 @@ test('data quality counts empty and placeholder values per field, with examples'
   assert.deepEqual(base.examples.map((e) => e.key), ['SD-4', 'SD-3', 'SD-2']);
   assert.equal(base.examples[1].value, ' please  UPDATE ');
 });
+
+test('trend words compare tickets per day in each half of the period', async () => {
+  const { trendWord, duration } = await import('../src/trend.js');
+  const pts = (counts, days = 7) => counts.map((count, i) => ({ date: `d${i}`, count, days }));
+  assert.equal(trendWord(pts([0, 0, 3, 5])), 'New');
+  assert.equal(trendWord(pts([2, 2, 5, 6])), 'Rising');
+  assert.equal(trendWord(pts([6, 5, 2, 1])), 'Fading');
+  assert.equal(trendWord(pts([4, 4, 4, 4])), 'Steady');
+  // A 1-day last week isn't a fall.
+  assert.equal(trendWord([...pts([7, 7, 7]), { date: 'x', count: 1, days: 1 }]), 'Steady');
+  assert.equal(trendWord(pts([1, 0, 1])), '');
+  assert.equal(duration(5.55), '5.6 h');
+  assert.equal(duration(50), '2.1 days');
+  assert.equal(duration(null), '–');
+});

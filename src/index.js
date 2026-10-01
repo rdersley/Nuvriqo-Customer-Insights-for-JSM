@@ -6,7 +6,7 @@ import { licenseAllows, UNLICENSED_MESSAGE } from './license.js';
 import { suggestMerges, summarise } from './ai.js';
 import { snapshotFrom } from './publish.js';
 import { deleteLive, deleteReport, listAlerts, loadAlert, loadLiveConfig, loadLiveState, loadReport, loadSettings, saveAlert, saveLiveConfig, saveReport, saveSettings } from './storage.js';
-import { liveConfigFrom } from './live.js';
+import { isLive, liveConfigFrom } from './live.js';
 import { queueAlertCheck, queueRefresh } from './liveJobs.js';
 import { sanitizeSettings, selectableFields } from './settings.js';
 
@@ -181,9 +181,11 @@ define('getPublication', async ({ payload, context }) => {
   return { portalEnabled: true, canPublish: allowed, published, liveState };
 });
 
-// payload: { snapshot, live: { preset, schedule }, projects }. With a schedule
-// the report becomes live: the approved issues, summary and next steps are
-// kept, and the numbers refresh (first refresh queued straight away).
+// payload: { snapshot, live: { preset, schedule }, projects }. The agent's
+// approved issues, summary and next steps are kept; what customers see (ticket
+// examples, trends, breakdowns) is then built by the app from that
+// organisation's own tickets, straight away and, with a schedule, on it. The
+// page's snapshot (themes and counts only) shows until the build finishes.
 define('publishReport', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
   if (!(await portalEnabled())) throw new Error('Portal reports are switched off on this site.');
@@ -192,23 +194,18 @@ define('publishReport', async ({ payload, context }) => {
   const snapshot = snapshotFrom({ ...payload.snapshot, organization }, { publishedBy: context?.accountId });
   const config = liveConfigFrom({
     ...payload?.live,
+    period: snapshot.period,
     approved: snapshot.patterns.filter((p) => p.title !== 'Other requests'),
     overview: snapshot.overview,
     actions: snapshot.actions,
   }, { organization, projects: payload?.projects });
-  if (config) {
-    snapshot.live = { preset: config.preset, schedule: config.schedule };
-    config.publishedAt = snapshot.publishedAt;
-    config.summaryWrittenAt = snapshot.summaryWrittenAt;
-  }
+  snapshot.live = isLive(config) ? { preset: config.preset, schedule: config.schedule } : null;
+  config.publishedAt = snapshot.publishedAt;
+  config.summaryWrittenAt = snapshot.summaryWrittenAt;
   await saveReport(snapshot);
-  if (config) {
-    await saveLiveConfig(config);
-    await queueRefresh(organization.id, 'published');
-  } else {
-    await deleteLive(organization.id);
-  }
-  console.log(`publishReport: org ${organization.id}, ${snapshot.patterns.length} patterns, live ${config ? `${config.preset}/${config.schedule}` : 'off'}`);
+  await saveLiveConfig(config);
+  await queueRefresh(organization.id, 'published');
+  console.log(`publishReport: org ${organization.id}, ${snapshot.patterns.length} patterns, ${isLive(config) ? `live ${config.preset}/${config.schedule}` : `one-off ${config.period.from}..${config.period.to}`}`);
   return snapshot;
 });
 
@@ -216,7 +213,7 @@ define('refreshLiveReport', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
   if (!(await canPublish())) throw new Error('Only Jira admins and project admins can refresh portal reports.');
   const organization = await visibleOrganisation(payload?.orgId);
-  if (!(await loadLiveConfig(organization.id))) throw new Error('This portal report isn’t set to keep up to date.');
+  if (!isLive(await loadLiveConfig(organization.id))) throw new Error('This portal report isn’t set to keep up to date.');
   await queueRefresh(organization.id, 'agent');
   return loadLiveState(organization.id);
 });

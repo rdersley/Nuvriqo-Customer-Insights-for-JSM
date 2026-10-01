@@ -10,6 +10,7 @@ import { analyseEveryTicket, Cancelled, FULL_LIMIT } from './fullAnalysis.js';
 import { applyMerges, median, patternTrend, topShares } from '../../../src/analysis.js';
 import { jqlClause, jqlEmptyClause } from '../../../src/settings.js';
 import { changeText } from '../../../src/alertText.js';
+import { duration, sparkPath, trendWord } from '../../../src/trend.js';
 import './styles.css';
 
 enableTheme(view);
@@ -19,14 +20,6 @@ const DEFAULT_RANGE = presetRange('last-30');
 const presetLabel = (key) => PRESETS.find((p) => p.key === key)?.label || key;
 const signed = (n) => `${n > 0 ? '+' : ''}${n}`;
 const MAX_LINK_KEYS = 150; // keeps "Open in Jira" URLs a sensible length
-
-/** 5.5 hours -> "5.5 h"; 50 hours -> "2.1 days". */
-function duration(hours) {
-  if (hours === null || hours === undefined) return '–';
-  if (hours < 24) return `${hours < 10 ? Math.round(hours * 10) / 10 : Math.round(hours)} h`;
-  const days = hours / 24;
-  return `${days < 10 ? Math.round(days * 10) / 10 : Math.round(days)} days`;
-}
 
 const resolutionText = ({ medianHours, openShare }) => [
   medianHours !== null && medianHours !== undefined ? `median ${duration(medianHours)} to resolve` : 'none resolved yet',
@@ -41,43 +34,18 @@ function TrendLozenge({ group }) {
   return <Lozenge>→ 0</Lozenge>;
 }
 
-
-// Links out of the app go through Forge's router: a plain target="_blank" link
-// in the app's iframe isn't reliable.
 /** A small line of a pattern's tickets per chart bucket. */
 function Sparkline({ points, unit }) {
   if (!points || points.length < 2) return null;
-  const width = 72;
-  const height = 18;
-  // Drawn as tickets per day so a partial first or last week doesn't look like a dip.
-  const rates = points.map((p) => p.count / (p.days || 1));
-  const max = Math.max(...rates) || 1;
-  const step = width / (points.length - 1);
-  const path = rates.map((r, i) => `${i ? 'L' : 'M'}${(i * step).toFixed(1)},${(height - 1 - (r / max) * (height - 2)).toFixed(1)}`).join(' ');
   const label = `Tickets per ${unit}: ${points.map((p) => p.count).join(', ')}`;
-  return <svg className="ci-spark" viewBox={`0 0 ${width} ${height}`} width={width} height={height} role="img" aria-label={label}>
+  return <svg className="ci-spark" viewBox="0 0 72 18" width={72} height={18} role="img" aria-label={label}>
     <title>{label}</title>
-    <path d={path} />
+    <path d={sparkPath(points, 72, 18)} />
   </svg>;
 }
 
-/** New, rising, steady or fading: the second half of the period against the first. */
-function trendWord(points) {
-  if (!points || points.length < 4) return '';
-  const half = Math.floor(points.length / 2);
-  const sum = (list, key) => list.reduce((s, p) => s + (key === 'days' ? p.days || 1 : p.count), 0);
-  const early = points.slice(0, half);
-  const late = points.slice(points.length - half);
-  if (sum(early) + sum(late) < 4) return '';
-  // Tickets per day in each half.
-  const first = sum(early) / sum(early, 'days');
-  const second = sum(late) / sum(late, 'days');
-  if (!first) return 'New';
-  if (second >= first * 1.5) return 'Rising';
-  if (second <= first * 0.67) return 'Fading';
-  return 'Steady';
-}
-
+// Links out of the app go through Forge's router: a plain target="_blank" link
+// in the app's iframe isn't reliable.
 function JiraLink({ href, className, children }) {
   return <a className={className} href={href} target="_blank" rel="noreferrer" onClick={(e) => { e.preventDefault(); router.open(href); }}>{children}</a>;
 }
@@ -636,7 +604,12 @@ function App() {
           </Notice>}
         </div>}
         {draft && <div className="nq-stack">
-          <Notice>Customers see these names, descriptions and counts. They don’t see ticket keys, titles or who raised them. {ai ? '' : 'Run the AI summary first for suggested names and a summary.'}</Notice>
+          <Notice>
+            Customers see your names, descriptions, summary and next steps. Customer Insights then builds the rest from {report.organization}’s own tickets:
+            counts, trends, time to resolve, the newest example tickets for each issue (only tickets shared with {report.organization}, linking to their portal
+            request), and the breakdowns an admin marked “Show on portal”. Data quality, alerts and other organisations are never shown.
+            {ai ? '' : ' Run the AI summary first for suggested names and a summary.'}
+          </Notice>
           <div className="ci-draft">
             {draft.patterns.map((p, index) => <div className="ci-draft__row" key={index}>
               <input type="checkbox" className="nq-check" checked={p.include} aria-label={`Include ${p.title}`} onChange={(e) => editPattern(index, { include: e.target.checked })} />
@@ -666,7 +639,8 @@ function App() {
             </Field>}
           </div>
           <div className="nq-inline">
-            <Button appearance="primary" onClick={publish} disabled={publishing || !draft.patterns.some((p) => p.include && p.title.trim())}>{publishing ? 'Publishing…' : 'Publish to portal'}</Button>
+            <Button appearance="primary" onClick={publish} disabled={publishing || Boolean(filter) || !draft.patterns.some((p) => p.include && p.title.trim())}>{publishing ? 'Publishing…' : 'Publish to portal'}</Button>
+            {filter && <span className="nq-muted">Clear the {filter.label} filter first: portal reports cover all of the organisation’s tickets.</span>}
             <Button appearance="subtle" onClick={() => setDraft(null)} disabled={publishing}>Cancel</Button>
           </div>
         </div>}
