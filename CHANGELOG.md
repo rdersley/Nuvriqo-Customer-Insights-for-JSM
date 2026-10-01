@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.0 (2026-10-01)
+
+Needs permission to create Jira issues (`write:jira-work`), so a Jira admin approves the upgrade. Tickets are only created when an admin switches it on.
+
+- **Resolution time:** median time to resolve and share still open, for the period, each pattern and each breakdown value.
+- **Drill-down:** click a breakdown value to analyse just those tickets; **Open in Jira** for patterns and values.
+- **Data quality:** share of tickets with no value or a placeholder (Unknown, Please update…) per breakdown field, with examples. Placeholder values are an admin setting.
+- **Trends:** a trend line and New / Rising / Steady / Fading for each pattern.
+- **Spike alerts:** a daily check of watched organisations; patterns that jump show as alerts in the app, and optionally as Jira tickets in a chosen project.
+- **Customer portal:** customers see the same report as agents for their own organisation, built by the app from their organisation's tickets: trends, time to resolve, example requests linking to the portal, and breakdowns an admin marks **Show on portal**.
+- **Fixes:** links to tickets and searches now open the Jira site, not api.atlassian.com.
+
 ## 1.0.0 (2026-10-01)
 
 First feature-complete version, running on the RiM work site and sandbox.
