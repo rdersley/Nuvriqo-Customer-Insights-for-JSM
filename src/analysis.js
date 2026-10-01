@@ -245,6 +245,11 @@ function describe(found, shown = found.members) {
       url: issue.self ? issue.self.replace(/\/rest\/api\/.*$/, '/browse/' + issue.key) : issue.key,
     })),
     sampleSummary: representative.issue.fields.summary || '(No summary)',
+    // Every analysed ticket in the pattern, for "Open in Jira" (agents only).
+    keys: ordered.map((issue) => issue.key),
+    // Hours to resolve for resolved tickets, and how many are still open.
+    resolvedHours: ordered.map(resolutionHours).filter((h) => h !== null),
+    openCount: ordered.filter((issue) => resolutionHours(issue) === null).length,
   };
 }
 
@@ -253,6 +258,33 @@ export function groupIssues(issues, threshold = 0.4) {
     .filter((found) => found.members.length > 1)
     .map((found) => describe(found))
     .sort((a, b) => b.count - a.count);
+}
+
+// ---- Resolution time ----------------------------------------------------------
+
+/** Hours from created to resolved, or null while the ticket is open. */
+export function resolutionHours(issue) {
+  const created = Date.parse(issue?.fields?.created);
+  const resolved = Date.parse(issue?.fields?.resolutiondate);
+  if (!Number.isFinite(created) || !Number.isFinite(resolved) || resolved < created) return null;
+  return Math.round(((resolved - created) / 3600000) * 10) / 10;
+}
+
+export function median(values) {
+  const sorted = (values || []).filter(Number.isFinite).sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : Math.round(((sorted[mid - 1] + sorted[mid]) / 2) * 10) / 10;
+}
+
+/** Median hours to resolve and share still open, for a set of tickets. */
+export function resolutionOf(issues) {
+  const hours = issues.map(resolutionHours);
+  const resolved = hours.filter((h) => h !== null);
+  return {
+    medianHours: median(resolved),
+    openShare: issues.length ? Math.round(((issues.length - resolved.length) / issues.length) * 100) : null,
+  };
 }
 
 // ---- Breakdowns by admin-chosen fields ---------------------------------------
@@ -301,7 +333,8 @@ function buildBreakdowns(breakdowns, current, previous, currentScale, previousSc
       .map((value) => {
         const count = Math.round((cur[value] || 0) * currentScale);
         const previousCount = Math.round((prev[value] || 0) * previousScale);
-        return { value, count, previousCount, change: count - previousCount };
+        const withValue = current.filter((issue) => issue.dims?.[id]?.includes(value));
+        return { value, count, previousCount, change: count - previousCount, ...resolutionOf(withValue) };
       })
       .filter((v) => v.count > 0)
       .sort((a, b) => b.count - a.count)
@@ -332,6 +365,9 @@ export function mergeGroups(groups, keyOf) {
     existing.estimated = existing.estimated || group.estimated;
     existing.tickets = [...existing.tickets, ...group.tickets].sort((a, b) => Date.parse(b.created) - Date.parse(a.created)).slice(0, 8);
     existing.dimCounts = addDimCounts(existing.dimCounts, group.dimCounts);
+    existing.keys = [...(existing.keys || []), ...(group.keys || [])];
+    existing.resolvedHours = [...(existing.resolvedHours || []), ...(group.resolvedHours || [])];
+    existing.openCount = (existing.openCount || 0) + (group.openCount || 0);
   }
   return [...merged.values()]
     .map((g) => ({ ...g, change: g.count - g.previousCount, changePercent: g.previousCount ? Math.round(((g.count - g.previousCount) / g.previousCount) * 100) : null }))
@@ -384,7 +420,8 @@ export function chartBuckets(periodStart, periodEnd) {
 /** Most tickets per period grouped in one Forge call (the browser passes Infinity). */
 export const PERIOD_LIMIT = 900;
 
-export function buildReport(issues, periodStart, periodEnd, totals = null, { limit = PERIOD_LIMIT, breakdowns = [] } = {}) {
+export function buildReport(issues, periodStart, periodEnd, totals = null, { limit = PERIOD_LIMIT, breakdowns = [], minPatternSize = 2 } = {}) {
+  const minimum = Math.max(2, Number(minPatternSize) || 2);
   const from = Date.parse(periodStart);
   const to = Date.parse(periodEnd + 'T23:59:59Z');
   const duration = Math.max(1, to - from);
@@ -408,7 +445,7 @@ export function buildReport(issues, periodStart, periodEnd, totals = null, { lim
       const now = found.members.filter((row) => currentKeys.has(row.issue.key));
       return { found, now, before: found.members.length - now.length };
     })
-    .filter(({ now }) => now.length > 1)
+    .filter(({ now }) => now.length >= minimum)
     .map(({ found, now, before }) => {
       const group = describe(found, now);
       const count = Math.round(now.length * currentScale);
@@ -445,8 +482,10 @@ export function buildReport(issues, periodStart, periodEnd, totals = null, { lim
     groups,
     timeSeries,
     breakdowns: buildBreakdowns(breakdowns, current, previous, currentScale, previousScale),
+    resolution: resolutionOf(current),
     analyzedCount: Math.min(current.length, limit),
     sampled: currentScale > 1 || previousScale > 1,
     capped: current.length > limit || previous.length > limit,
+    minPatternSize: minimum,
   };
 }

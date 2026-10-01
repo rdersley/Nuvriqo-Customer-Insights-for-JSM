@@ -8,7 +8,7 @@ import '@nuvriqo/ui/css';
 import { enableTheme } from '@nuvriqo/ui/theme';
 import { ActionBar, AppHeader, Button, Card, Field, Footer, Loading, Notice } from '@nuvriqo/ui/react';
 import { version } from '../../../package.json';
-import { MAX_BREAKDOWNS } from '../../../src/settings.js';
+import { MAX_BREAKDOWNS, MIN_PATTERN } from '../../../src/settings.js';
 import './styles.css';
 
 enableTheme(view);
@@ -81,6 +81,15 @@ function App() {
           </div>}
           <p className="nq-muted">Only fields that hold choices can be used: select lists, checkboxes, radio buttons, cascading selects, labels, components, priority and request type.</p>
         </div>
+      </Card>
+
+      <Card title="Patterns" description="How many similar tickets it takes before Customer Insights reports them as a recurring issue.">
+        <Field label="Minimum tickets per pattern" htmlFor="cs-min-pattern"
+          help={`Between ${MIN_PATTERN.min} and ${MIN_PATTERN.max}. Higher numbers show fewer, more established issues. For large customers this counts tickets in the analysed sample.`}>
+          <input id="cs-min-pattern" className="nq-input cs-number" type="number" min={MIN_PATTERN.min} max={MIN_PATTERN.max} step={1}
+            value={draft.minPatternSize ?? MIN_PATTERN.default}
+            onChange={(e) => { setSaved(false); setDraft((d) => ({ ...d, minPatternSize: Number(e.target.value) })); }} />
+        </Field>
       </Card>
 
       <Card title="Customer portal" description="Let Jira admins and project admins publish reviewed reports that customers see under “Service report” in the portal.">

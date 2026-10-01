@@ -3,7 +3,7 @@ import { buildReport } from '../../../src/analysis.js';
 
 self.onmessage = ({ data }) => {
   try {
-    self.postMessage({ report: buildReport(data.issues, data.startDate, data.endDate, null, { limit: Infinity, breakdowns: data.breakdowns || [] }) });
+    self.postMessage({ report: buildReport(data.issues, data.startDate, data.endDate, null, { limit: Infinity, breakdowns: data.breakdowns || [], minPatternSize: data.minPatternSize }) });
   } catch (error) {
     self.postMessage({ error: error.message || 'Grouping failed.' });
   }

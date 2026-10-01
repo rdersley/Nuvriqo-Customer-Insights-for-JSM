@@ -29,7 +29,10 @@ test('AI input includes field breakdowns and where each pattern happens', () => 
     groups: [{ ...report.groups[0], sampleCount: 4, dimCounts: { base: { STN: 3, DUB: 1 } } }],
   };
   const input = aiInput(withFields);
-  assert.deepEqual(input.breakdowns, [{ field: 'Base', top: [{ value: 'STN', tickets: 40, previousPeriodTickets: 10 }, { value: 'DUB', tickets: 5, previousPeriodTickets: 6 }] }]);
+  assert.deepEqual(input.breakdowns, [{ field: 'Base', top: [
+    { value: 'STN', tickets: 40, previousPeriodTickets: 10, medianHoursToResolve: null, openShare: null },
+    { value: 'DUB', tickets: 5, previousPeriodTickets: 6, medianHoursToResolve: null, openShare: null },
+  ] }]);
   assert.deepEqual(input.patterns[0].where, { Base: ['STN 75%', 'DUB 25%'] });
   assert.deepEqual(aiInput(report).patterns[0].where, {});
 });
