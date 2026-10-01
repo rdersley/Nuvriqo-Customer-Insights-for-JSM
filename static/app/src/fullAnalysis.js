@@ -91,6 +91,8 @@ export async function analyseEveryTicket({ query, sampled, onProgress, isCancell
     projectCount: sampled.projectCount,
     totalFetched: issues.length,
     breakdownFields: sampled.breakdownFields,
+    baseJql: sampled.baseJql,
+    filter: sampled.filter,
     full: true,
   };
 }

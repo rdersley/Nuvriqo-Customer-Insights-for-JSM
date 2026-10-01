@@ -4,7 +4,7 @@
 // @forge/llm throws on import outside the Forge runtime, so it is loaded on
 // first use; tests pass their own chatFn.
 const forgeChat = async (prompt) => (await import('@forge/llm')).chat(prompt);
-import { topShares } from './analysis.js';
+import { median, topShares } from './analysis.js';
 
 // Preferred first. Haiku 4.5 is avoided: Forge retires it on 2026-10-15.
 export const MODELS = ['claude-sonnet-5', 'claude-sonnet-4-6'];
@@ -24,10 +24,12 @@ export function aiInput(report) {
     previousPeriodTickets: Number(report.previousCount) || 0,
     // Ticket totals are exact; pattern counts are scaled from a sample when true.
     patternCountsAreEstimates: Boolean(report.sampled),
+    // Median hours to resolve, and share still open, for the period.
+    resolution: report.resolution || null,
     // Admin-chosen fields (e.g. base, device type): where tickets come from.
     breakdowns: (report.breakdowns || []).map((b) => ({
       field: clip(b.label, 40),
-      top: b.values.slice(0, MAX_VALUES).map((v) => ({ value: clip(v.value, 60), tickets: v.count, previousPeriodTickets: v.previousCount })),
+      top: b.values.slice(0, MAX_VALUES).map((v) => ({ value: clip(v.value, 60), tickets: v.count, previousPeriodTickets: v.previousCount, medianHoursToResolve: v.medianHours ?? null, openShare: v.openShare ?? null })),
     })),
     patterns: (report.groups || []).slice(0, MAX_PATTERNS).map((g, index) => ({
       index,
@@ -35,6 +37,8 @@ export function aiInput(report) {
       tickets: Number(g.count) || 0,
       previousPeriodTickets: Number(g.previousCount) || 0,
       exampleSummaries: (g.tickets || []).slice(0, MAX_EXAMPLES).map((t) => clip(t.summary, 200)),
+      medianHoursToResolve: median(g.resolvedHours),
+      openShare: g.sampleCount ? Math.round(((g.openCount || 0) / g.sampleCount) * 100) : null,
       where: Object.fromEntries((report.breakdownFields || []).map((f) => [clip(f.label, 40), topShares(g, f.id).map((s) => `${clip(s.value, 60)} ${s.share}%`)]).filter(([, v]) => v.length)),
     })),
   };
@@ -73,6 +77,7 @@ const SYSTEM = `You are a service desk analyst preparing a customer account revi
 You get recurring ticket patterns found by rule-based text matching, with counts and example ticket summaries.
 Use only the data given. Do not invent causes, numbers, dates or ticket details. Ticket codes such as crew IDs and airport codes are not problems.
 breakdowns and each pattern's "where" show how tickets split across fields the admin chose (for example base or device type). Mention a concentration only when it is clear (for example most of a pattern at one base, or one value growing fast).
+medianHoursToResolve and openShare show how long problems take to fix and how many are still open; point out issues that are clearly slower to resolve than the rest.
 Ticket totals are exact. When patternCountsAreEstimates is true, pattern counts are scaled up from a sample: describe them approximately ("around 250", "a handful", "several times more") and never quote small previous-period pattern counts as exact figures.
 Write in plain British English. Call report_insights once.`;
 

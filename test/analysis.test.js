@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildReport, chartBuckets, groupIssues, mergeGroups, tokenize, topShares } from '../src/analysis.js';
+import { buildReport, chartBuckets, groupIssues, median, mergeGroups, tokenize, topShares } from '../src/analysis.js';
 
 function issue(key, summary, created, description = '') {
   return {
@@ -173,7 +173,7 @@ test('breakdowns count each field value per period, and patterns keep their own 
   const breakdowns = [{ id: 'base', label: 'Base' }, { id: 'device', label: 'Device type' }];
   const report = buildReport(issues, '2026-09-16', '2026-09-22', null, { breakdowns });
   const base = report.breakdowns.find((b) => b.id === 'base');
-  assert.deepEqual(base.values, [
+  assert.deepEqual(base.values.map(({ value, count, previousCount, change }) => ({ value, count, previousCount, change })), [
     { value: 'STN', count: 2, previousCount: 0, change: 2 },
     { value: 'DUB', count: 2, previousCount: 1, change: 1 },
   ]);
@@ -203,6 +203,29 @@ test('patterns need the configured minimum of tickets', () => {
   const three = buildReport(issues, '2026-09-16', '2026-09-22', null, { minPatternSize: 3 });
   assert.deepEqual(three.groups.map((g) => g.count), [3]);
   assert.equal(three.minPatternSize, 3);
+});
+
+test('resolution time: median hours and share still open, overall, per pattern and per value', () => {
+  const at = (key, summary, created, resolved, base) => ({
+    key, self: `https://x.atlassian.net/rest/api/3/issue/${key}`, dims: { base: [base] },
+    fields: { summary, created, resolutiondate: resolved, status: { name: resolved ? 'Resolved' : 'Open' } },
+  });
+  const issues = [
+    at('SD-1', 'vPOS stuck', '2026-09-16T10:00:00Z', '2026-09-16T12:00:00Z', 'STN'),
+    at('SD-2', 'vPOS stuck', '2026-09-17T10:00:00Z', '2026-09-17T16:00:00Z', 'STN'),
+    at('SD-3', 'vPOS stuck', '2026-09-18T10:00:00Z', null, 'DUB'),
+    at('SD-4', 'Printer paper', '2026-09-18T10:00:00Z', '2026-09-20T10:00:00Z', 'DUB'),
+  ];
+  const report = buildReport(issues, '2026-09-16', '2026-09-22', null, { breakdowns: [{ id: 'base', label: 'Base' }] });
+  assert.deepEqual(report.resolution, { medianHours: 6, openShare: 25 });
+  const stuck = report.groups.find((g) => /stuck/i.test(g.theme));
+  assert.deepEqual(stuck.resolvedHours.sort((a, b) => a - b), [2, 6]);
+  assert.equal(stuck.openCount, 1);
+  assert.deepEqual(stuck.keys.sort(), ['SD-1', 'SD-2', 'SD-3']);
+  const stn = report.breakdowns[0].values.find((v) => v.value === 'STN');
+  assert.deepEqual([stn.medianHours, stn.openShare], [4, 0]);
+  assert.equal(median([5, 1, 3]), 3);
+  assert.equal(median([]), null);
 });
 
 test('handles Jira rich text descriptions', () => {
