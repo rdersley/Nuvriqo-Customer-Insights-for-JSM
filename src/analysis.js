@@ -368,6 +368,7 @@ export function mergeGroups(groups, keyOf) {
     existing.keys = [...(existing.keys || []), ...(group.keys || [])];
     existing.resolvedHours = [...(existing.resolvedHours || []), ...(group.resolvedHours || [])];
     existing.openCount = (existing.openCount || 0) + (group.openCount || 0);
+    if (existing.buckets && group.buckets) existing.buckets = existing.buckets.map((n, i) => n + (group.buckets[i] || 0));
   }
   return [...merged.values()]
     .map((g) => ({ ...g, change: g.count - g.previousCount, changePercent: g.previousCount ? Math.round(((g.count - g.previousCount) / g.previousCount) * 100) : null }))
@@ -412,6 +413,77 @@ export function chartBuckets(periodStart, periodEnd) {
   return buckets;
 }
 
+/** Sampled tickets per chart bucket. */
+function bucketCounts(issues, buckets) {
+  const counts = new Array(buckets.length).fill(0);
+  for (const issue of issues) {
+    const day = isoDay(Date.parse(issue.fields.created));
+    const index = buckets.findLastIndex((b) => b.date <= day);
+    if (index >= 0) counts[index] += 1;
+  }
+  return counts;
+}
+
+/**
+ * A pattern's tickets per chart bucket: its share of each bucket's sampled
+ * tickets times that bucket's exact count. Sampling takes the newest tickets
+ * of each slice, so raw sample counts would skew the shape; shares don't.
+ * Exact when every ticket was analysed.
+ */
+export function patternTrend(group, report) {
+  const series = report?.timeSeries || [];
+  const samples = report?.bucketSamples || [];
+  if (!Array.isArray(group?.buckets) || group.buckets.length !== series.length || !series.length) return null;
+  // Days in each bucket: the first and last weeks are often partial.
+  const buckets = report.startDate && report.endDate ? chartBuckets(report.startDate, report.endDate) : [];
+  return series.map((point, i) => ({
+    date: point.date,
+    count: samples[i] ? Math.round((group.buckets[i] / samples[i]) * point.count) : 0,
+    days: buckets.length === series.length ? Math.max(1, Math.round((Date.parse(buckets[i].toExclusive) - Date.parse(buckets[i].from)) / DAY)) : 1,
+  }));
+}
+
+// ---- Data quality ------------------------------------------------------------
+
+const normalValue = (v) => String(v).toLowerCase().replace(/\s+/g, ' ').trim();
+const DATA_QUALITY_EXAMPLES = 5;
+
+/**
+ * Per breakdown field: tickets with no value or only a placeholder value
+ * (e.g. "Unknown", "Please update"), scaled to the period when sampled.
+ */
+export function buildDataQuality(breakdowns, current, currentScale, placeholders = []) {
+  const marks = new Set(placeholders.map(normalValue));
+  const scale = (n) => Math.round(n * currentScale);
+  return breakdowns.map(({ id, label, kind }) => {
+    const placeholderCounts = {};
+    const problems = [];
+    let missing = 0;
+    for (const issue of current) {
+      const values = issue.dims?.[id] || [];
+      if (!values.length) { missing += 1; problems.push(issue); continue; }
+      const marked = values.filter((v) => marks.has(normalValue(v)));
+      for (const v of marked) placeholderCounts[v] = (placeholderCounts[v] || 0) + 1;
+      if (marked.length === values.length) problems.push(issue);
+    }
+    const examples = problems
+      .sort((a, b) => Date.parse(b.fields.created) - Date.parse(a.fields.created))
+      .slice(0, DATA_QUALITY_EXAMPLES)
+      .map((issue) => ({ key: issue.key, summary: issue.fields.summary || '(No summary)', value: issue.dims?.[id]?.join(', ') || '' }));
+    return {
+      id,
+      label,
+      kind,
+      missing: scale(missing),
+      placeholders: Object.entries(placeholderCounts).sort((a, b) => b[1] - a[1]).map(([value, n]) => ({ value, count: scale(n) })),
+      problemCount: scale(problems.length),
+      share: current.length ? Math.round((problems.length / current.length) * 100) : 0,
+      examples,
+      estimated: currentScale > 1,
+    };
+  });
+}
+
 /**
  * `totals` (optional) carries exact Jira counts when `issues` is only a sample:
  * { current, previous, timeSeries }. Pattern counts are then scaled from the
@@ -420,7 +492,7 @@ export function chartBuckets(periodStart, periodEnd) {
 /** Most tickets per period grouped in one Forge call (the browser passes Infinity). */
 export const PERIOD_LIMIT = 900;
 
-export function buildReport(issues, periodStart, periodEnd, totals = null, { limit = PERIOD_LIMIT, breakdowns = [], minPatternSize = 2 } = {}) {
+export function buildReport(issues, periodStart, periodEnd, totals = null, { limit = PERIOD_LIMIT, breakdowns = [], minPatternSize = 2, placeholders = [] } = {}) {
   const minimum = Math.max(2, Number(minPatternSize) || 2);
   const from = Date.parse(periodStart);
   const to = Date.parse(periodEnd + 'T23:59:59Z');
@@ -440,6 +512,7 @@ export function buildReport(issues, periodStart, periodEnd, totals = null, { lim
   // Both periods are clustered together, so a pattern is the same group in each
   // period and its trend compares like with like. Counts are scaled per period.
   const currentKeys = new Set(current.map((issue) => issue.key));
+  const buckets = chartBuckets(periodStart, periodEnd);
   const trends = cluster([...current.slice(0, limit), ...previous.slice(0, limit)], 0.4, Infinity)
     .map((found) => {
       const now = found.members.filter((row) => currentKeys.has(row.issue.key));
@@ -459,21 +532,13 @@ export function buildReport(issues, periodStart, periodEnd, totals = null, { lim
         change: count - prior,
         changePercent: prior ? Math.round(((count - prior) / prior) * 100) : null,
         dimCounts: dimCountsOf(now.map((row) => row.issue)),
+        buckets: bucketCounts(now.map((row) => row.issue), buckets),
       };
     })
     .sort((a, b) => b.count - a.count);
   const groups = mergeGroups(trends, (g) => g.theme.toLowerCase());
-  let timeSeries = totals?.timeSeries;
-  if (!timeSeries) {
-    const buckets = chartBuckets(periodStart, periodEnd);
-    const counts = new Map(buckets.map((b) => [b.date, 0]));
-    for (const issue of current) {
-      const day = isoDay(Date.parse(issue.fields.created));
-      const bucket = buckets.findLast((b) => b.date <= day);
-      if (bucket) counts.set(bucket.date, counts.get(bucket.date) + 1);
-    }
-    timeSeries = [...counts].map(([date, count]) => ({ date, count }));
-  }
+  const bucketSamples = bucketCounts(current, buckets);
+  const timeSeries = totals?.timeSeries || buckets.map((b, i) => ({ date: b.date, count: bucketSamples[i] }));
   return {
     currentCount,
     previousCount,
@@ -481,7 +546,10 @@ export function buildReport(issues, periodStart, periodEnd, totals = null, { lim
     changePercent: previousCount ? Math.round(((currentCount - previousCount) / previousCount) * 100) : null,
     groups,
     timeSeries,
+    bucketSamples,
     breakdowns: buildBreakdowns(breakdowns, current, previous, currentScale, previousScale),
+    dataQuality: buildDataQuality(breakdowns, current, currentScale, placeholders),
+    placeholders,
     resolution: resolutionOf(current),
     analyzedCount: Math.min(current.length, limit),
     sampled: currentScale > 1 || previousScale > 1,

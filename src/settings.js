@@ -5,7 +5,21 @@
 export const MAX_BREAKDOWNS = 5;
 // Fewest tickets (in the analysed sample) for a group to count as a pattern.
 export const MIN_PATTERN = { min: 2, max: 10, default: 3 };
-export const DEFAULT_SETTINGS = { breakdowns: [], portalEnabled: true, minPatternSize: MIN_PATTERN.default };
+// Breakdown values that mean "nobody filled this in". Admins can change the list.
+export const DEFAULT_PLACEHOLDERS = ['Unknown', 'Please update', 'Please select', 'N/A', 'None', 'Not set', 'TBC', 'TBD', '-'];
+export const MAX_PLACEHOLDERS = 30;
+export const DEFAULT_SETTINGS = { breakdowns: [], portalEnabled: true, minPatternSize: MIN_PATTERN.default, placeholders: DEFAULT_PLACEHOLDERS };
+
+/** Placeholder values from a list or comma/new-line separated text; trimmed, unique, bounded. */
+export function placeholderList(input) {
+  if (input === undefined || input === null) return DEFAULT_PLACEHOLDERS;
+  const items = Array.isArray(input) ? input : String(input).split(/[,\n]/);
+  const seen = new Set();
+  return items
+    .map((v) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, 60))
+    .filter((v) => v && !seen.has(v.toLowerCase()) && seen.add(v.toLowerCase()))
+    .slice(0, MAX_PLACEHOLDERS);
+}
 
 /** A pattern minimum within range; anything else falls back to the default. */
 export function patternMinimum(value) {
@@ -64,11 +78,18 @@ export function sanitizeSettings(input, selectable) {
     .map((b) => byId.get(String(b?.id)) && { ...byId.get(String(b.id)), label: clip(b.label, 40) || byId.get(String(b.id)).name })
     .filter((b) => b && !seen.has(b.id) && seen.add(b.id))
     .slice(0, MAX_BREAKDOWNS);
-  return { breakdowns, portalEnabled: input?.portalEnabled !== false, minPatternSize: patternMinimum(input?.minPatternSize) };
+  return { breakdowns, portalEnabled: input?.portalEnabled !== false, minPatternSize: patternMinimum(input?.minPatternSize), placeholders: placeholderList(input?.placeholders) };
 }
 
 const quote = (v) => `"${String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 const SYSTEM_JQL = { components: 'component', priority: 'priority', issuetype: 'issuetype', resolution: 'resolution', labels: 'labels' };
+
+/** JQL for tickets with no value in breakdown field `b`, or null when it can't be searched. */
+export function jqlEmptyClause(b) {
+  const custom = /^customfield_(\d+)$/.exec(b?.id || '');
+  const field = custom ? `cf[${custom[1]}]` : SYSTEM_JQL[b?.id];
+  return field && b.kind !== 'requestType' ? `${field} is EMPTY` : null;
+}
 
 /**
  * JQL that matches tickets with `value` in breakdown field `b`, or null when

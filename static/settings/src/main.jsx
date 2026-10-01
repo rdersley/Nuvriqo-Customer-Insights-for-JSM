@@ -8,7 +8,7 @@ import '@nuvriqo/ui/css';
 import { enableTheme } from '@nuvriqo/ui/theme';
 import { ActionBar, AppHeader, Button, Card, Field, Footer, Loading, Notice } from '@nuvriqo/ui/react';
 import { version } from '../../../package.json';
-import { MAX_BREAKDOWNS, MIN_PATTERN } from '../../../src/settings.js';
+import { DEFAULT_PLACEHOLDERS, MAX_BREAKDOWNS, MAX_PLACEHOLDERS, MIN_PATTERN } from '../../../src/settings.js';
 import './styles.css';
 
 enableTheme(view);
@@ -89,6 +89,15 @@ function App() {
           <input id="cs-min-pattern" className="nq-input cs-number" type="number" min={MIN_PATTERN.min} max={MIN_PATTERN.max} step={1}
             value={draft.minPatternSize ?? MIN_PATTERN.default}
             onChange={(e) => { setSaved(false); setDraft((d) => ({ ...d, minPatternSize: Number(e.target.value) })); }} />
+        </Field>
+      </Card>
+
+      <Card title="Data quality" description="Breakdown values that mean nobody filled the field in. Reports count them, with tickets that have no value, so you can track the clean-up.">
+        <Field label="Placeholder values" htmlFor="cs-placeholders"
+          help={`One per line or separated by commas, up to ${MAX_PLACEHOLDERS}. Matching ignores capital letters and extra spaces.`}>
+          <textarea id="cs-placeholders" className="nq-textarea" rows={4}
+            value={Array.isArray(draft.placeholders) ? draft.placeholders.join('\n') : (draft.placeholders ?? DEFAULT_PLACEHOLDERS.join('\n'))}
+            onChange={(e) => { setSaved(false); setDraft((d) => ({ ...d, placeholders: e.target.value })); }} />
         </Field>
       </Card>
 

@@ -136,7 +136,7 @@ export function parseQuery(payload, filter = null) {
  * Exact totals, an even sample of up to 900 tickets per period, and the
  * report. `budgetMs` stops new fetches in time for the caller's limit.
  */
-export async function runAnalysis(query, { breakdowns = [], minPatternSize, mode = 'user', budgetMs = 15000 } = {}) {
+export async function runAnalysis(query, { breakdowns = [], minPatternSize, placeholders, mode = 'user', budgetMs = 15000 } = {}) {
   const { startDate, endDate, previousStart, endExclusive, between } = query;
   const startedAt = Date.now();
   const deadline = startedAt + budgetMs;
@@ -182,7 +182,7 @@ export async function runAnalysis(query, { breakdowns = [], minPatternSize, mode
     timeSeries = buckets.map((b, i) => ({ date: b.date, count: counts[i] }));
   }
   const issues = [...currentIssues, ...previousIssues];
-  const report = buildReport(issues, startDate, endDate, { current: currentTotal, previous: previousTotal, timeSeries }, { breakdowns, minPatternSize });
+  const report = buildReport(issues, startDate, endDate, { current: currentTotal, previous: previousTotal, timeSeries }, { breakdowns, minPatternSize, placeholders });
   console.log(`analysis (${mode}): ${currentTotal}+${previousTotal} tickets, ${issues.length} fetched in ${Date.now() - startedAt}ms`);
   return {
     ...report,

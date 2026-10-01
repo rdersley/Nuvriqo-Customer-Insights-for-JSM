@@ -27,8 +27,8 @@ export async function refreshLiveReport(orgId) {
   try {
     const { from, to } = livePeriod(config);
     const query = parseQuery({ organization: config.organization, startDate: from, endDate: to, projects: config.projects });
-    const { breakdowns, minPatternSize } = await loadSettings();
-    const report = await runAnalysis(query, { breakdowns, minPatternSize, mode: 'app', budgetMs: 240000 });
+    const { breakdowns, minPatternSize, placeholders } = await loadSettings();
+    const report = await runAnalysis(query, { breakdowns, minPatternSize, placeholders, mode: 'app', budgetMs: 240000 });
     let assignments;
     try {
       ({ assignments } = await assignToApproved(report, config.approved));

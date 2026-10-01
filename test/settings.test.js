@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dimensionsOf, fieldKind, jqlClause, readValues, sanitizeSettings, selectableFields } from '../src/settings.js';
+import { DEFAULT_PLACEHOLDERS, dimensionsOf, fieldKind, jqlClause, jqlEmptyClause, placeholderList, readValues, sanitizeSettings, selectableFields } from '../src/settings.js';
 
 // Shapes as returned by GET /rest/api/3/field.
 const fields = [
@@ -86,4 +86,19 @@ test('an issue is reduced to its breakdown values', () => {
   const issue = { fields: { customfield_10100: { value: 'STN' }, customfield_10101: [{ value: 'vPOS' }, { value: 'vPOS' }] } };
   assert.deepEqual(dimensionsOf(issue, breakdowns), { customfield_10100: ['STN'], customfield_10101: ['vPOS'] });
   assert.deepEqual(dimensionsOf({ fields: {} }, breakdowns), {});
+});
+
+test('placeholder values: defaults, text lists, no repeats, bounded', () => {
+  assert.deepEqual(placeholderList(undefined), DEFAULT_PLACEHOLDERS);
+  assert.deepEqual(placeholderList('Unknown, please update\n\nunknown ,  N/A '), ['Unknown', 'please update', 'N/A']);
+  assert.deepEqual(placeholderList([]), []);
+  assert.equal(placeholderList(Array.from({ length: 50 }, (_, i) => `v${i}`)).length, 30);
+  assert.deepEqual(sanitizeSettings({ placeholders: 'TBC' }, []).placeholders, ['TBC']);
+  assert.deepEqual(sanitizeSettings({}, []).placeholders, DEFAULT_PLACEHOLDERS);
+});
+
+test('an empty breakdown field becomes an is EMPTY condition', () => {
+  assert.equal(jqlEmptyClause({ id: 'customfield_10100', kind: 'option' }), 'cf[10100] is EMPTY');
+  assert.equal(jqlEmptyClause({ id: 'labels', kind: 'strings' }), 'labels is EMPTY');
+  assert.equal(jqlEmptyClause({ id: 'customfield_10010', kind: 'requestType' }), null);
 });
