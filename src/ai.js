@@ -11,6 +11,8 @@ export const MODELS = ['claude-sonnet-5', 'claude-sonnet-4-6'];
 const MAX_PATTERNS = 12;
 const MAX_EXAMPLES = 8;
 const MAX_VALUES = 6;
+// Models sometimes send numbers as text ("3", "-1"); accept whole numbers either way.
+const wholeNumber = (v) => (typeof v === 'string' && /^-?\d+$/.test(v.trim()) ? Number(v) : v);
 const clip = (value, length) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, length);
 
 /** The report reduced to what the model needs, with sizes bounded. */
@@ -96,8 +98,9 @@ export function parseInsights(raw, patternCount) {
   if (!raw || typeof raw !== 'object') throw new Error('The AI response could not be read.');
   const seen = new Set();
   const patterns = (Array.isArray(raw.patterns) ? raw.patterns : [])
-    .filter((p) => Number.isInteger(p?.index) && p.index >= 0 && p.index < patternCount && !seen.has(p.index) && seen.add(p.index))
-    .map((p) => ({ index: p.index, title: clip(p.title, 80), summary: clip(p.summary, 300), coherent: p.coherent !== false }))
+    .map((p) => ({ ...p, index: wholeNumber(p?.index) }))
+    .filter((p) => Number.isInteger(p.index) && p.index >= 0 && p.index < patternCount && !seen.has(p.index) && seen.add(p.index))
+    .map((p) => ({ index: p.index, title: clip(p.title, 80), summary: clip(p.summary, 300), coherent: p.coherent !== false && p.coherent !== 'false' }))
     .filter((p) => p.title);
   return {
     overview: clip(raw.overview, 1200),
@@ -162,7 +165,7 @@ export function parseMerges(raw, groupCount) {
   return (Array.isArray(raw?.issues) ? raw.issues : [])
     .map((issue) => ({
       title: clip(issue?.title, 80),
-      members: [...new Set(Array.isArray(issue?.members) ? issue.members : [])]
+      members: [...new Set((Array.isArray(issue?.members) ? issue.members : []).map(wholeNumber))]
         .filter((i) => Number.isInteger(i) && i >= 0 && i < groupCount && !used.has(i) && used.add(i)),
     }))
     .filter((issue) => issue.title && issue.members.length > 0);
@@ -233,10 +236,12 @@ Use only the data given. Call assign_groups once.`;
 export function parseAssignments(raw, groupCount, approvedCount) {
   const out = new Array(groupCount).fill(-1);
   const seen = new Set();
-  for (const a of Array.isArray(raw?.assignments) ? raw.assignments : []) {
-    if (!Number.isInteger(a?.index) || a.index < 0 || a.index >= groupCount || seen.has(a.index)) continue;
-    seen.add(a.index);
-    out[a.index] = Number.isInteger(a.issue) && a.issue >= 0 && a.issue < approvedCount ? a.issue : -1;
+  for (const item of Array.isArray(raw?.assignments) ? raw.assignments : []) {
+    const index = wholeNumber(item?.index);
+    const issue = wholeNumber(item?.issue);
+    if (!Number.isInteger(index) || index < 0 || index >= groupCount || seen.has(index)) continue;
+    seen.add(index);
+    out[index] = Number.isInteger(issue) && issue >= 0 && issue < approvedCount ? issue : -1;
   }
   return out;
 }
@@ -268,7 +273,11 @@ export async function summarise(report, { chatFn = forgeChat, models = MODELS } 
         tool_choice: { type: 'function', function: { name: TOOL.function.name } },
         max_completion_tokens: 2000,
       });
-      return { ...parseInsights(argumentsOf(response), input.patterns.length), model };
+      const raw = argumentsOf(response);
+      const parsed = parseInsights(raw, input.patterns.length);
+      // finish_reason "length" means the reply was cut off.
+      console.log(`aiSummary: finish=${response?.choices?.[0]?.finish_reason}, patterns sent=${input.patterns.length}, returned=${Array.isArray(raw?.patterns) ? raw.patterns.length : 'none'}, kept=${parsed.patterns.length}`);
+      return { ...parsed, model };
     } catch (error) {
       lastError = error;
       // Try the next model only when this one is unavailable to the app.
