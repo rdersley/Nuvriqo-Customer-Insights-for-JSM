@@ -84,10 +84,10 @@ define('fetchTickets', async ({ payload, context }) => {
 
 define('analyze', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
-  const { breakdowns, minPatternSize } = await loadSettings();
+  const { breakdowns, minPatternSize, placeholders } = await loadSettings();
   const query = parseQuery(payload, filterFor(payload?.filter, breakdowns));
   // Resolvers are killed at 25s; runAnalysis stops starting new fetches after the budget.
-  return runAnalysis(query, { breakdowns, minPatternSize, mode: 'user', budgetMs: FETCH_BUDGET_MS });
+  return runAnalysis(query, { breakdowns, minPatternSize, placeholders, mode: 'user', budgetMs: FETCH_BUDGET_MS });
 });
 
 // Opt-in, separate from analyze so it gets its own time limit. The report comes

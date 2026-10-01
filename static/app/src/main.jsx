@@ -7,8 +7,8 @@ import { AppHeader, Button, Card, EmptyState, Field, Footer, Kpi, Loading, Lozen
 import { version } from '../../../package.json';
 import { localIso, matchPreset, presetRange, PRESETS } from '../../../src/dates.js';
 import { analyseEveryTicket, Cancelled, FULL_LIMIT } from './fullAnalysis.js';
-import { applyMerges, median, topShares } from '../../../src/analysis.js';
-import { jqlClause } from '../../../src/settings.js';
+import { applyMerges, median, patternTrend, topShares } from '../../../src/analysis.js';
+import { jqlClause, jqlEmptyClause } from '../../../src/settings.js';
 import './styles.css';
 
 enableTheme(view);
@@ -43,6 +43,40 @@ function TrendLozenge({ group }) {
 
 // Links out of the app go through Forge's router: a plain target="_blank" link
 // in the app's iframe isn't reliable.
+/** A small line of a pattern's tickets per chart bucket. */
+function Sparkline({ points, unit }) {
+  if (!points || points.length < 2) return null;
+  const width = 72;
+  const height = 18;
+  // Drawn as tickets per day so a partial first or last week doesn't look like a dip.
+  const rates = points.map((p) => p.count / (p.days || 1));
+  const max = Math.max(...rates) || 1;
+  const step = width / (points.length - 1);
+  const path = rates.map((r, i) => `${i ? 'L' : 'M'}${(i * step).toFixed(1)},${(height - 1 - (r / max) * (height - 2)).toFixed(1)}`).join(' ');
+  const label = `Tickets per ${unit}: ${points.map((p) => p.count).join(', ')}`;
+  return <svg className="ci-spark" viewBox={`0 0 ${width} ${height}`} width={width} height={height} role="img" aria-label={label}>
+    <title>{label}</title>
+    <path d={path} />
+  </svg>;
+}
+
+/** New, rising, steady or fading: the second half of the period against the first. */
+function trendWord(points) {
+  if (!points || points.length < 4) return '';
+  const half = Math.floor(points.length / 2);
+  const sum = (list, key) => list.reduce((s, p) => s + (key === 'days' ? p.days || 1 : p.count), 0);
+  const early = points.slice(0, half);
+  const late = points.slice(points.length - half);
+  if (sum(early) + sum(late) < 4) return '';
+  // Tickets per day in each half.
+  const first = sum(early) / sum(early, 'days');
+  const second = sum(late) / sum(late, 'days');
+  if (!first) return 'New';
+  if (second >= first * 1.5) return 'Rising';
+  if (second <= first * 0.67) return 'Fading';
+  return 'Steady';
+}
+
 function JiraLink({ href, className, children }) {
   return <a className={className} href={href} target="_blank" rel="noreferrer" onClick={(e) => { e.preventDefault(); router.open(href); }}>{children}</a>;
 }
@@ -237,10 +271,14 @@ function App() {
     if (!report) return;
     const rows = [['Customer', report.organization], ['Period', `${report.startDate} to ${report.endDate}`]];
     if (ai?.overview) rows.push(['AI overview', ai.overview]);
-    rows.push([], ['Pattern', 'AI name', 'Ticket count', 'Previous period', 'Change', 'Example ticket']);
-    groups.forEach((group, index) => rows.push([group.theme, aiPattern(index)?.title || '', group.count, group.previousCount, group.changePercent === null ? 'New' : `${group.changePercent}%`, group.tickets[0]?.key || '']));
+    rows.push([], ['Pattern', 'AI name', 'Ticket count', 'Previous period', 'Change', 'Trend', 'Example ticket']);
+    groups.forEach((group, index) => rows.push([group.theme, aiPattern(index)?.title || '', group.count, group.previousCount, group.changePercent === null ? 'New' : `${group.changePercent}%`, trendWord(patternTrend(group, report)), group.tickets[0]?.key || '']));
     rows.push([], ['Date bucket', 'Tickets']);
     for (const point of report.timeSeries) rows.push([point.date, point.count]);
+    if (qualityIssues.length) {
+      rows.push([], ['Data quality: field', 'Tickets with no real value', 'Share', 'No value', 'Placeholders']);
+      for (const d of qualityIssues) rows.push([d.label, d.problemCount, `${d.share}%`, d.missing, d.placeholders.map((p) => `${p.value} (${p.count})`).join('; ')]);
+    }
     const csv = rows.map((r) => r.map((cell) => `"${String(cell ?? '').replaceAll('"', '""')}"`).join(',')).join('\n');
     const link = document.createElement('a');
     link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
@@ -257,10 +295,11 @@ function App() {
     const keys = (group.keys || group.tickets.map((t) => t.key)).slice(0, MAX_LINK_KEYS);
     return jiraSearch(keys.length ? `key in (${keys.join(', ')}) ORDER BY created DESC` : '');
   };
-  const valueLink = (field, value) => {
-    const clause = jqlClause(field, value);
-    return clause && report?.baseJql ? jiraSearch(`${report.baseJql} AND ${clause} ORDER BY created DESC`) : '';
-  };
+  // The period's tickets narrowed by a field condition.
+  const periodLink = (clause) => (clause && report?.baseJql ? jiraSearch(`${report.baseJql} AND ${clause} ORDER BY created DESC`) : '');
+  const valueLink = (field, value) => periodLink(jqlClause(field, value));
+  const qualityIssues = (report?.dataQuality || []).filter((d) => d.problemCount > 0);
+  const bucketUnit = report && (Date.parse(report.endDate) - Date.parse(report.startDate)) / 86400000 < 35 ? 'day' : 'week';
   const canDrill = (field, value) => Boolean(jqlClause(field, value));
   const drill = (field, value) => runAnalysis(null, { id: field.id, label: field.label, value });
   const groupResolution = (group) => {
@@ -415,6 +454,36 @@ function App() {
         })}</div>
         : <p className="nq-muted">Tip: a Jira admin can add breakdowns by base, device type or any other field in <strong>Jira settings → Apps → Customer Insights</strong>.</p>}
 
+      {qualityIssues.length > 0 && <Card
+        title="Data quality"
+        description={`Breakdown fields left empty or set to a placeholder such as “Unknown”. ${qualityIssues.some((d) => d.estimated) ? 'Estimated from the sample.' : 'All tickets in the period.'}`}
+      >
+        <ul className="ci-quality">{qualityIssues.map((d) => {
+          const field = report.breakdownFields?.find((f) => f.id === d.id) || d;
+          const approx = d.estimated ? '≈' : '';
+          const parts = [
+            d.missing > 0 && { key: 'none', text: `No value: ${approx}${d.missing.toLocaleString()}`, href: periodLink(jqlEmptyClause(field)) },
+            ...d.placeholders.map((p) => ({ key: p.value, text: `${p.value}: ${approx}${p.count.toLocaleString()}`, href: periodLink(jqlClause(field, p.value)) })),
+          ].filter(Boolean);
+          return <li key={d.id}>
+            <div className="nq-spread">
+              <strong>{d.label}</strong>
+              <span><strong>{d.share}%</strong> of tickets ({approx}{d.problemCount.toLocaleString()}) have no real {d.label}</span>
+            </div>
+            <span className="ci-meter ci-meter--warning"><i style={{ width: `${Math.max(2, d.share)}%` }} /></span>
+            <p className="nq-muted ci-quality__parts">{parts.map((part, i) => <React.Fragment key={part.key}>
+              {i > 0 && ' · '}
+              {part.href ? <JiraLink href={part.href}>{part.text}</JiraLink> : part.text}
+            </React.Fragment>)}</p>
+            {d.examples.length > 0 && <ul className="ci-quality__examples">{d.examples.map((e) => <li key={e.key}>
+              <JiraLink className="nq-table__key" href={ticketLink(e)}>{e.key}</JiraLink>
+              <span>{e.summary}</span>
+              <span className="nq-muted">{e.value || 'no value'}</span>
+            </li>)}</ul>}
+          </li>;
+        })}</ul>
+      </Card>}
+
       <Card
         title={<>Issue patterns <span className="nq-pill nq-pill--neutral">{groups.length}</span></>}
         description="Repeated customer issues, with ticket evidence"
@@ -456,13 +525,19 @@ function App() {
                 {aiPattern(index)?.summary || group.sampleSummary}
                 {whereOf(group) && <em className="ci-where">{whereOf(group)}</em>}
               </span>
-              <span className="ci-meter"><i style={{ width: `${Math.max(8, (group.count / maxGroup) * 100)}%` }} /></span>
+              <span className="ci-pattern__volume">
+                <Sparkline points={patternTrend(group, report)} unit={bucketUnit} />
+                <span className="ci-meter"><i style={{ width: `${Math.max(8, (group.count / maxGroup) * 100)}%` }} /></span>
+              </span>
               <span className="ci-pattern__count" title={group.estimated ? `${group.sampleCount} in the sample` : undefined}>{group.estimated ? '≈' : ''}{group.count}</span>
               <TrendLozenge group={group} />
               <span className="ci-pattern__chevron" aria-hidden="true">›</span>
             </summary>
             <div className="nq-spread ci-pattern__meta">
-              <span className="nq-muted">{resolutionText(groupResolution(group))}{group.estimated ? ' (from the sample)' : ''}</span>
+              <span className="nq-muted">
+                {trendWord(patternTrend(group, report)) && <>{trendWord(patternTrend(group, report))} through the period · </>}
+                {resolutionText(groupResolution(group))}{group.estimated ? ' (from the sample)' : ''}
+              </span>
               {patternLink(group) && <JiraLink href={patternLink(group)}>
                 {(() => {
                   const n = Math.min((group.keys || group.tickets).length, MAX_LINK_KEYS);
