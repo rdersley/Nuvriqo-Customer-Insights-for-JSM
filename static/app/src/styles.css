@@ -83,3 +83,9 @@
   .ci-pattern summary { grid-template-columns: 1fr 36px 64px 12px; }
   .ci-pattern__sample, .ci-meter { display: none; }
 }
+
+/* Resolution times, drill-down and "Open in Jira" */
+.ci-link { background: none; border: 0; padding: 0; font: inherit; color: var(--nq-link); cursor: pointer; text-align: left; }
+.ci-link:hover { text-decoration: underline; }
+.ci-values__meta { display: block; color: var(--nq-text-subtle); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ci-pattern__meta { padding: var(--nq-space-100) 0; }

@@ -7,7 +7,8 @@ import { AppHeader, Button, Card, EmptyState, Field, Footer, Kpi, Loading, Lozen
 import { version } from '../../../package.json';
 import { localIso, matchPreset, presetRange, PRESETS } from '../../../src/dates.js';
 import { analyseEveryTicket, Cancelled, FULL_LIMIT } from './fullAnalysis.js';
-import { applyMerges, topShares } from '../../../src/analysis.js';
+import { applyMerges, median, topShares } from '../../../src/analysis.js';
+import { jqlClause } from '../../../src/settings.js';
 import './styles.css';
 
 enableTheme(view);
@@ -16,6 +17,20 @@ const PRODUCT = 'Customer Insights';
 const DEFAULT_RANGE = presetRange('last-30');
 const presetLabel = (key) => PRESETS.find((p) => p.key === key)?.label || key;
 const signed = (n) => `${n > 0 ? '+' : ''}${n}`;
+const MAX_LINK_KEYS = 150; // keeps "Open in Jira" URLs a sensible length
+
+/** 5.5 hours -> "5.5 h"; 50 hours -> "2.1 days". */
+function duration(hours) {
+  if (hours === null || hours === undefined) return '–';
+  if (hours < 24) return `${hours < 10 ? Math.round(hours * 10) / 10 : Math.round(hours)} h`;
+  const days = hours / 24;
+  return `${days < 10 ? Math.round(days * 10) / 10 : Math.round(days)} days`;
+}
+
+const resolutionText = ({ medianHours, openShare }) => [
+  medianHours !== null && medianHours !== undefined ? `median ${duration(medianHours)} to resolve` : 'none resolved yet',
+  openShare ? `${openShare}% open` : '',
+].filter(Boolean).join(' · ');
 
 // More tickets than last period is the thing to look at, so rises are flagged.
 function TrendLozenge({ group }) {
@@ -51,6 +66,7 @@ function App() {
   const [aiLoading, setAiLoading] = useState(false);
   const [aiError, setAiError] = useState('');
   const [aiStep, setAiStep] = useState('');
+  const [filter, setFilter] = useState(null); // drill-down: { id, label, value }
   // After "Summarise with AI", patterns are the AI-merged list; before, the rule-based one.
   const groups = ai?.groups || report?.groups || [];
 
@@ -71,12 +87,13 @@ function App() {
   const labelEvery = Math.max(1, Math.ceil((report?.timeSeries?.length || 0) / 10));
   const totalChange = report?.changePercent === null ? 'New baseline' : `${signed(report?.changePercent)}%`;
 
-  async function runAnalysis(event) {
-    event?.preventDefault();
+  async function runAnalysis(event, nextFilter = null) {
+    event?.preventDefault?.();
     if (!selectedOrg) return;
+    setFilter(nextFilter);
     cancelFull.current = true;
     setLoadingReport(true); setError(''); setReport(null); setAi(null); setAiError(''); setFullRun(null); setFullError('');
-    const query = { organization: selectedOrg, startDate: from, endDate: to, projects };
+    const query = { organization: selectedOrg, startDate: from, endDate: to, projects, ...(nextFilter && { filter: { id: nextFilter.id, value: nextFilter.value } }) };
     try {
       const result = await invoke('analyze', query);
       setReport(result);
@@ -220,6 +237,27 @@ function App() {
     link.click(); URL.revokeObjectURL(link.href);
   }
 
+  // "Open in Jira" links. Jira's address comes from the ticket links Jira returned.
+  const jiraOrigin = (() => {
+    const url = report?.groups?.[0]?.tickets?.[0]?.url;
+    try { return url ? new URL(url).origin : ''; } catch { return ''; }
+  })();
+  const jiraSearch = (jql) => (jiraOrigin && jql ? `${jiraOrigin}/issues/?jql=${encodeURIComponent(jql)}` : '');
+  const patternLink = (group) => {
+    const keys = (group.keys || group.tickets.map((t) => t.key)).slice(0, MAX_LINK_KEYS);
+    return jiraSearch(keys.length ? `key in (${keys.join(', ')}) ORDER BY created DESC` : '');
+  };
+  const valueLink = (field, value) => {
+    const clause = jqlClause(field, value);
+    return clause && report?.baseJql ? jiraSearch(`${report.baseJql} AND ${clause} ORDER BY created DESC`) : '';
+  };
+  const canDrill = (field, value) => Boolean(jqlClause(field, value));
+  const drill = (field, value) => runAnalysis(null, { id: field.id, label: field.label, value });
+  const groupResolution = (group) => {
+    const analysed = group.sampleCount || group.count;
+    return { medianHours: median(group.resolvedHours || []), openShare: analysed ? Math.round(((group.openCount || 0) / analysed) * 100) : null };
+  };
+
   const periodDays = report ? Math.max(1, Math.ceil((Date.parse(report.endDate) - Date.parse(report.startDate)) / 86400000) + 1) : 0;
 
   return <div className="nq-page">
@@ -267,6 +305,13 @@ function App() {
 
     {error && <Notice kind="error" title="We couldn’t complete that request.">{error}</Notice>}
 
+    {filter && <Notice>
+      <div className="nq-spread">
+        <span>Showing only tickets where <strong>{filter.label}</strong> is <strong>{filter.value}</strong>.</span>
+        <Button small onClick={() => runAnalysis(null, null)} disabled={loadingReport}>Clear filter</Button>
+      </div>
+    </Notice>}
+
     {licensed && !loadingOrgs && !report && !loadingReport && !error && <Card>
       <EmptyState
         title="Find the issues behind the numbers"
@@ -284,6 +329,7 @@ function App() {
         <Kpi icon="↗" kind={report.change > 0 ? 'warning' : report.change < 0 ? 'success' : 'info'} label="Vs previous period" value={totalChange} hint={`${signed(report.change)} tickets · previous ${report.previousCount}`} />
         <Kpi icon="⌘" kind="warning" label="Recurring patterns" value={groups.length} hint={`with at least ${report.minPatternSize || 2} related tickets`} />
         <Kpi icon="✓" kind="success" label="Tickets analysed" value={report.analyzedCount.toLocaleString()} hint={report.sampled ? 'sample spread across the period' : 'rule-based text matching'} />
+        {report.resolution && <Kpi icon="◷" kind="info" label="Median time to resolve" value={duration(report.resolution.medianHours)} hint={report.resolution.openShare ? `${report.resolution.openShare}% still open` : 'all resolved'} />}
       </div>
 
       {groups.length > 0 && <Card
@@ -336,10 +382,19 @@ function App() {
       {report.breakdowns?.length > 0
         ? <div className="nq-grid ci-breakdowns">{report.breakdowns.map((b) => {
           const top = Math.max(1, ...b.values.map((v) => v.count));
+          const field = report.breakdownFields?.find((f) => f.id === b.id) || b;
           return <Card key={b.id} title={`By ${b.label}`} description={b.estimated ? 'Estimated from the sample' : 'All tickets in the period'}>
             {b.values.length
               ? <ol className="ci-values">{b.values.map((v) => <li key={v.value}>
-                <span className="ci-values__name" title={v.value}>{v.value}</span>
+                <span className="ci-values__name" title={v.value}>
+                  {canDrill(field, v.value) && !filter
+                    ? <button type="button" className="ci-link" onClick={() => drill(field, v.value)} title={`Analyse only ${v.value}`}>{v.value}</button>
+                    : v.value}
+                  {v.medianHours !== undefined && <small className="ci-values__meta">
+                    {resolutionText(v)}
+                    {valueLink(field, v.value) && <> · <a href={valueLink(field, v.value)} target="_blank" rel="noreferrer">Open in Jira</a></>}
+                  </small>}
+                </span>
                 <span className="ci-meter"><i style={{ width: `${Math.max(4, (v.count / top) * 100)}%` }} /></span>
                 <span className="ci-values__count">{b.estimated ? '≈' : ''}{v.count.toLocaleString()}</span>
                 <TrendLozenge group={v} />
@@ -396,6 +451,12 @@ function App() {
               <TrendLozenge group={group} />
               <span className="ci-pattern__chevron" aria-hidden="true">›</span>
             </summary>
+            <div className="nq-spread ci-pattern__meta">
+              <span className="nq-muted">{resolutionText(groupResolution(group))}{group.estimated ? ' (from the sample)' : ''}</span>
+              {patternLink(group) && <a href={patternLink(group)} target="_blank" rel="noreferrer">
+                Open {Math.min((group.keys || group.tickets).length, MAX_LINK_KEYS)} tickets in Jira
+              </a>}
+            </div>
             <div className="nq-table-wrap">
               <table className="nq-table">
                 <thead><tr><th>Key</th><th>Summary</th><th>Status</th><th>Created</th></tr></thead>

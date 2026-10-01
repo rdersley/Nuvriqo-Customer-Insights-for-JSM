@@ -67,6 +67,28 @@ export function sanitizeSettings(input, selectable) {
   return { breakdowns, portalEnabled: input?.portalEnabled !== false, minPatternSize: patternMinimum(input?.minPatternSize) };
 }
 
+const quote = (v) => `"${String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+const SYSTEM_JQL = { components: 'component', priority: 'priority', issuetype: 'issuetype', resolution: 'resolution', labels: 'labels' };
+
+/**
+ * JQL that matches tickets with `value` in breakdown field `b`, or null when
+ * the field can't be searched that way (JSM request type uses a different
+ * value format in JQL).
+ */
+export function jqlClause(b, value) {
+  if (!b || value === undefined || value === null || value === '') return null;
+  const custom = /^customfield_(\d+)$/.exec(b.id);
+  const field = custom ? `cf[${custom[1]}]` : SYSTEM_JQL[b.id];
+  if (!field) return null;
+  if (b.kind === 'cascading') {
+    if (!custom) return null;
+    const [parent, child] = String(value).split(' / ');
+    return `${field} in cascadeOption(${quote(parent)}${child ? `, ${quote(child)}` : ''})`;
+  }
+  if (b.kind === 'requestType') return null;
+  return `${field} = ${quote(value)}`;
+}
+
 /** Breakdown values of one Jira issue: { fieldId: [values] }. */
 export function dimensionsOf(issue, breakdowns) {
   const dims = {};

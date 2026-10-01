@@ -2,13 +2,13 @@
 // live portal reports (read as the app, in a queued background job).
 import { asApp, asUser, route } from '@forge/api';
 import { buildReport, chartBuckets } from './analysis.js';
-import { dimensionsOf } from './settings.js';
+import { dimensionsOf, jqlClause } from './settings.js';
 
 export const DAY = 86400000;
 const PERIOD_SAMPLE = 900; // most tickets analysed per period (groupIssues' cap)
 const SAMPLE_SLICES = 9;
 const CONCURRENCY = 6;
-const FIELDS = ['summary', 'description', 'created', 'status'];
+const FIELDS = ['summary', 'description', 'created', 'status', 'resolutiondate'];
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 /** 'user' (default) respects the signed-in user's permissions; 'app' is for background jobs. */
@@ -91,8 +91,21 @@ function escapeJql(value) {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
+/**
+ * A drill-down filter ({ id, value }) as JQL. Only configured breakdown fields
+ * are accepted and the JQL is built here, never taken from the client.
+ */
+export function filterFor(payloadFilter, breakdowns) {
+  if (!payloadFilter) return null;
+  const field = breakdowns.find((b) => b.id === String(payloadFilter.id));
+  const value = String(payloadFilter.value ?? '').slice(0, 120);
+  const clause = field && jqlClause(field, value);
+  if (!clause) throw new Error('That filter isn’t available. Check the breakdown fields in Customer Insights settings.');
+  return { id: field.id, label: field.label, value, clause };
+}
+
 /** Validates an analysis request and builds its JQL. */
-export function parseQuery(payload) {
+export function parseQuery(payload, filter = null) {
   const { organization, startDate, endDate, projects = [] } = payload || {};
   if (!organization?.name || !ISO_DATE.test(startDate || '') || !ISO_DATE.test(endDate || '')) {
     throw new Error('Choose an organization and valid start and end dates.');
@@ -105,15 +118,17 @@ export function parseQuery(payload) {
   const cleanProjects = [...new Set(requestedProjects.map((key) => String(key).trim().toUpperCase()).filter((key) => /^[A-Z][A-Z0-9_]{0,49}$/.test(key)))];
   if (requestedProjects.length && !cleanProjects.length) throw new Error('Enter one or more valid Jira project keys, such as SD or HW.');
   const projectClause = cleanProjects.length ? ` AND project in (${cleanProjects.map((key) => `'${key}'`).join(', ')})` : '';
+  const filterClause = filter ? ` AND ${filter.clause}` : '';
   const fullSpan = Math.max(1, span + 1);
   return {
     organization,
     startDate,
     endDate,
     cleanProjects,
+    filter,
     previousStart: new Date(Date.parse(`${startDate}T00:00:00Z`) - fullSpan * DAY).toISOString().slice(0, 10),
     endExclusive: new Date(Date.parse(`${endDate}T00:00:00Z`) + DAY).toISOString().slice(0, 10),
-    between: (from, toExclusive) => `organizations = "${escapeJql(organization.name)}" AND created >= "${from}" AND created < "${toExclusive}"${projectClause}`,
+    between: (from, toExclusive) => `organizations = "${escapeJql(organization.name)}" AND created >= "${from}" AND created < "${toExclusive}"${projectClause}${filterClause}`,
   };
 }
 
@@ -173,6 +188,9 @@ export async function runAnalysis(query, { breakdowns = [], minPatternSize, mode
     ...report,
     organization: query.organization.name, startDate, endDate, previousStart, endExclusive,
     projectCount: query.cleanProjects.length || null, totalFetched: issues.length, cutShort,
-    breakdownFields: breakdowns.map(({ id, label }) => ({ id, label })),
+    breakdownFields: breakdowns.map(({ id, label, kind }) => ({ id, label, kind })),
+    // For "Open in Jira" links: the period's search, and any drill-down filter.
+    baseJql: between(startDate, endExclusive),
+    filter: query.filter ? { id: query.filter.id, label: query.filter.label, value: query.filter.value } : null,
   };
 }

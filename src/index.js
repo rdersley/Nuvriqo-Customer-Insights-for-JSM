@@ -1,7 +1,7 @@
 import ResolverModule from '@forge/resolver';
 import { asUser, route } from '@forge/api';
 import { textOf } from './analysis.js';
-import { parseQuery, readJson, runAnalysis, searchPage } from './engine.js';
+import { filterFor, parseQuery, readJson, runAnalysis, searchPage } from './engine.js';
 import { licenseAllows, UNLICENSED_MESSAGE } from './license.js';
 import { suggestMerges, summarise } from './ai.js';
 import { snapshotFrom } from './publish.js';
@@ -51,13 +51,13 @@ const DESCRIPTION_CHARS = 600;
 
 define('fetchTickets', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
-  const query = parseQuery(payload);
+  const { breakdowns } = await loadSettings();
+  const query = parseQuery(payload, filterFor(payload?.filter, breakdowns));
   const { from, toExclusive } = payload;
   if (!ISO_DATE.test(from || '') || !ISO_DATE.test(toExclusive || '') || from < query.previousStart || toExclusive > query.endExclusive || from >= toExclusive) {
     throw new Error('Invalid ticket range.');
   }
   const deadline = Date.now() + FULL_CALL_BUDGET_MS;
-  const { breakdowns } = await loadSettings();
   const tickets = [];
   let token = typeof payload.nextPageToken === 'string' ? payload.nextPageToken : undefined;
   for (let page = 0; page < FULL_PAGES_PER_CALL; page += 1) {
@@ -71,6 +71,7 @@ define('fetchTickets', async ({ payload, context }) => {
           summary: issue.fields?.summary || '',
           description: textOf(issue.fields?.description).join(' ').slice(0, DESCRIPTION_CHARS),
           created: issue.fields?.created,
+          resolutiondate: issue.fields?.resolutiondate || null,
           status: { name: issue.fields?.status?.name || 'Unknown' },
         },
       });
@@ -83,8 +84,8 @@ define('fetchTickets', async ({ payload, context }) => {
 
 define('analyze', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
-  const query = parseQuery(payload);
   const { breakdowns, minPatternSize } = await loadSettings();
+  const query = parseQuery(payload, filterFor(payload?.filter, breakdowns));
   // Resolvers are killed at 25s; runAnalysis stops starting new fetches after the budget.
   return runAnalysis(query, { breakdowns, minPatternSize, mode: 'user', budgetMs: FETCH_BUDGET_MS });
 });
