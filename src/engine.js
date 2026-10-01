@@ -20,10 +20,32 @@ export async function readJson(response, label) {
   return body ? JSON.parse(body) : {};
 }
 
+const RETRIES = 3;
+const MAX_WAIT_MS = 8000;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Wait before retry `attempt` (0-based): Jira's Retry-After when given, else 1s, 2s, 4s. */
+export function retryDelay(response, attempt) {
+  const header = Number(response?.headers?.get?.('Retry-After'));
+  const ms = Number.isFinite(header) && header > 0 ? header * 1000 : 1000 * 2 ** attempt;
+  return Math.min(ms, MAX_WAIT_MS);
+}
+
+/** requestJira that retries rate limits (429) and brief outages (503). */
+export async function requestWithRetry(send, { retries = RETRIES, wait = sleep } = {}) {
+  for (let attempt = 0; ; attempt += 1) {
+    const response = await send();
+    if (![429, 503].includes(response.status) || attempt >= retries) return response;
+    const delay = retryDelay(response, attempt);
+    console.log(`jira: ${response.status}, retry ${attempt + 1}/${retries} in ${delay}ms`);
+    await wait(delay);
+  }
+}
+
 async function jiraPost(path, body, label, mode) {
-  const response = await jira(mode).requestJira(path, {
+  const response = await requestWithRetry(() => jira(mode).requestJira(path, {
     method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-  });
+  }));
   return readJson(response, label);
 }
 
@@ -99,7 +121,7 @@ export function parseQuery(payload) {
  * Exact totals, an even sample of up to 900 tickets per period, and the
  * report. `budgetMs` stops new fetches in time for the caller's limit.
  */
-export async function runAnalysis(query, { breakdowns = [], mode = 'user', budgetMs = 15000 } = {}) {
+export async function runAnalysis(query, { breakdowns = [], minPatternSize, mode = 'user', budgetMs = 15000 } = {}) {
   const { startDate, endDate, previousStart, endExclusive, between } = query;
   const startedAt = Date.now();
   const deadline = startedAt + budgetMs;
@@ -145,7 +167,7 @@ export async function runAnalysis(query, { breakdowns = [], mode = 'user', budge
     timeSeries = buckets.map((b, i) => ({ date: b.date, count: counts[i] }));
   }
   const issues = [...currentIssues, ...previousIssues];
-  const report = buildReport(issues, startDate, endDate, { current: currentTotal, previous: previousTotal, timeSeries }, { breakdowns });
+  const report = buildReport(issues, startDate, endDate, { current: currentTotal, previous: previousTotal, timeSeries }, { breakdowns, minPatternSize });
   console.log(`analysis (${mode}): ${currentTotal}+${previousTotal} tickets, ${issues.length} fetched in ${Date.now() - startedAt}ms`);
   return {
     ...report,

@@ -2,6 +2,7 @@
 .nq-page > * + * { margin-top: var(--nq-space-200); }
 .cs-row { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto; gap: var(--nq-space-150); align-items: end; }
 .cs-row .nq-field { margin: 0; }
+.cs-number { max-width: 120px; }
 .cs-check { display: flex; align-items: center; gap: var(--nq-space-100); color: var(--nq-text); }
 @media (max-width: 700px) {
   .cs-row { grid-template-columns: minmax(0, 1fr); }

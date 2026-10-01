@@ -2,8 +2,16 @@
 // Nothing site-specific is hard-coded: breakdown fields are picked from the
 // site's own Jira fields.
 
-export const MAX_BREAKDOWNS = 3;
-export const DEFAULT_SETTINGS = { breakdowns: [], portalEnabled: true };
+export const MAX_BREAKDOWNS = 5;
+// Fewest tickets (in the analysed sample) for a group to count as a pattern.
+export const MIN_PATTERN = { min: 2, max: 10, default: 3 };
+export const DEFAULT_SETTINGS = { breakdowns: [], portalEnabled: true, minPatternSize: MIN_PATTERN.default };
+
+/** A pattern minimum within range; anything else falls back to the default. */
+export function patternMinimum(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n >= MIN_PATTERN.min && n <= MIN_PATTERN.max ? n : MIN_PATTERN.default;
+}
 
 const clip = (value, length) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, length);
 
@@ -56,7 +64,7 @@ export function sanitizeSettings(input, selectable) {
     .map((b) => byId.get(String(b?.id)) && { ...byId.get(String(b.id)), label: clip(b.label, 40) || byId.get(String(b.id)).name })
     .filter((b) => b && !seen.has(b.id) && seen.add(b.id))
     .slice(0, MAX_BREAKDOWNS);
-  return { breakdowns, portalEnabled: input?.portalEnabled !== false };
+  return { breakdowns, portalEnabled: input?.portalEnabled !== false, minPatternSize: patternMinimum(input?.minPatternSize) };
 }
 
 /** Breakdown values of one Jira issue: { fieldId: [values] }. */

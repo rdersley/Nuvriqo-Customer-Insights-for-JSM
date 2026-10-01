@@ -282,7 +282,7 @@ function App() {
       <div className="nq-kpis">
         <Kpi icon="▤" label="Tickets in period" value={report.currentCount.toLocaleString()} hint={`for ${report.organization}`} />
         <Kpi icon="↗" kind={report.change > 0 ? 'warning' : report.change < 0 ? 'success' : 'info'} label="Vs previous period" value={totalChange} hint={`${signed(report.change)} tickets · previous ${report.previousCount}`} />
-        <Kpi icon="⌘" kind="warning" label="Recurring patterns" value={groups.length} hint="with at least 2 related tickets" />
+        <Kpi icon="⌘" kind="warning" label="Recurring patterns" value={groups.length} hint={`with at least ${report.minPatternSize || 2} related tickets`} />
         <Kpi icon="✓" kind="success" label="Tickets analysed" value={report.analyzedCount.toLocaleString()} hint={report.sampled ? 'sample spread across the period' : 'rule-based text matching'} />
       </div>
 

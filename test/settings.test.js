@@ -34,7 +34,7 @@ test('values are read for each field kind', () => {
   assert.deepEqual(readValues(null, 'option'), []);
 });
 
-test('settings are validated against the site fields: known ids only, no repeats, at most 3', () => {
+test('settings are validated against the site fields: known ids only, no repeats', () => {
   const selectable = selectableFields(fields);
   const saved = sanitizeSettings({
     breakdowns: [
@@ -52,9 +52,20 @@ test('settings are validated against the site fields: known ids only, no repeats
     ['customfield_10100', 'Base location', 'option'],
     ['customfield_10101', 'Device type', 'options'],
     ['labels', 'Labels', 'strings'],
+    ['priority', 'Priority', 'named'],
   ]);
   assert.equal(saved.portalEnabled, false);
   assert.equal(sanitizeSettings({}, selectable).portalEnabled, true);
+});
+
+test('up to 5 breakdown fields, and a bounded pattern minimum defaulting to 3', () => {
+  const selectable = selectableFields(fields);
+  const all = sanitizeSettings({ breakdowns: selectable.map((f) => ({ id: f.id })) }, selectable);
+  assert.equal(all.breakdowns.length, 5);
+  assert.equal(all.minPatternSize, 3);
+  assert.equal(sanitizeSettings({ minPatternSize: 4 }, selectable).minPatternSize, 4);
+  assert.equal(sanitizeSettings({ minPatternSize: '6' }, selectable).minPatternSize, 6);
+  for (const bad of [1, 11, 2.5, 'x', null]) assert.equal(sanitizeSettings({ minPatternSize: bad }, selectable).minPatternSize, 3);
 });
 
 test('an issue is reduced to its breakdown values', () => {
