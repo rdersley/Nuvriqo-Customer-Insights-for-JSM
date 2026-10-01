@@ -400,14 +400,14 @@ function App() {
                   {canDrill(field, v.value) && !filter
                     ? <button type="button" className="ci-link" onClick={() => drill(field, v.value)} title={`Analyse only ${v.value}`}>{v.value}</button>
                     : v.value}
-                  {v.medianHours !== undefined && <small className="ci-values__meta">
-                    {resolutionText(v)}
-                    {valueLink(field, v.value) && <> · <JiraLink href={valueLink(field, v.value)}>Open in Jira</JiraLink></>}
-                  </small>}
                 </span>
                 <span className="ci-meter"><i style={{ width: `${Math.max(4, (v.count / top) * 100)}%` }} /></span>
                 <span className="ci-values__count">{b.estimated ? '≈' : ''}{v.count.toLocaleString()}</span>
                 <TrendLozenge group={v} />
+                {v.medianHours !== undefined && <small className="ci-values__meta">
+                  {resolutionText(v)}
+                  {valueLink(field, v.value) && <> · <JiraLink href={valueLink(field, v.value)}>Open in Jira</JiraLink></>}
+                </small>}
               </li>)}</ol>
               : <EmptyState compact title={`No ${b.label} values on these tickets.`} />}
             {b.withoutValue > 0 && <p className="nq-muted">{b.estimated ? '≈' : ''}{b.withoutValue.toLocaleString()} tickets have no {b.label}.</p>}
