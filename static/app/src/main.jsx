@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { invoke, view } from '@forge/bridge';
+import { invoke, router, view } from '@forge/bridge';
 import '@nuvriqo/ui/css';
 import { enableTheme } from '@nuvriqo/ui/theme';
 import { AppHeader, Button, Card, EmptyState, Field, Footer, Kpi, Loading, Lozenge, Notice } from '@nuvriqo/ui/react';
@@ -40,6 +40,12 @@ function TrendLozenge({ group }) {
   return <Lozenge>→ 0</Lozenge>;
 }
 
+
+// Links out of the app go through Forge's router: a plain target="_blank" link
+// in the app's iframe isn't reliable.
+function JiraLink({ href, className, children }) {
+  return <a className={className} href={href} target="_blank" rel="noreferrer" onClick={(e) => { e.preventDefault(); router.open(href); }}>{children}</a>;
+}
 function App() {
   const [orgs, setOrgs] = useState([]);
   const [organizationId, setOrganizationId] = useState('');
@@ -67,6 +73,11 @@ function App() {
   const [aiError, setAiError] = useState('');
   const [aiStep, setAiStep] = useState('');
   const [filter, setFilter] = useState(null); // drill-down: { id, label, value }
+  const [siteUrl, setSiteUrl] = useState('');
+
+  useEffect(() => {
+    view.getContext().then((context) => setSiteUrl(String(context?.siteUrl || '').replace(/\/$/, ''))).catch(() => {});
+  }, []);
   // After "Summarise with AI", patterns are the AI-merged list; before, the rule-based one.
   const groups = ai?.groups || report?.groups || [];
 
@@ -237,11 +248,10 @@ function App() {
     link.click(); URL.revokeObjectURL(link.href);
   }
 
-  // "Open in Jira" links. Jira's address comes from the ticket links Jira returned.
-  const jiraOrigin = (() => {
-    const url = report?.groups?.[0]?.tickets?.[0]?.url;
-    try { return url ? new URL(url).origin : ''; } catch { return ''; }
-  })();
+  // "Open in Jira" links. The site address comes from Forge's context: ticket
+  // links from the API point at api.atlassian.com, not the Jira site.
+  const jiraOrigin = siteUrl;
+  const ticketLink = (ticket) => (siteUrl ? `${siteUrl}/browse/${ticket.key}` : ticket.url);
   const jiraSearch = (jql) => (jiraOrigin && jql ? `${jiraOrigin}/issues/?jql=${encodeURIComponent(jql)}` : '');
   const patternLink = (group) => {
     const keys = (group.keys || group.tickets.map((t) => t.key)).slice(0, MAX_LINK_KEYS);
@@ -392,7 +402,7 @@ function App() {
                     : v.value}
                   {v.medianHours !== undefined && <small className="ci-values__meta">
                     {resolutionText(v)}
-                    {valueLink(field, v.value) && <> · <a href={valueLink(field, v.value)} target="_blank" rel="noreferrer">Open in Jira</a></>}
+                    {valueLink(field, v.value) && <> · <JiraLink href={valueLink(field, v.value)}>Open in Jira</JiraLink></>}
                   </small>}
                 </span>
                 <span className="ci-meter"><i style={{ width: `${Math.max(4, (v.count / top) * 100)}%` }} /></span>
@@ -453,15 +463,18 @@ function App() {
             </summary>
             <div className="nq-spread ci-pattern__meta">
               <span className="nq-muted">{resolutionText(groupResolution(group))}{group.estimated ? ' (from the sample)' : ''}</span>
-              {patternLink(group) && <a href={patternLink(group)} target="_blank" rel="noreferrer">
-                Open {Math.min((group.keys || group.tickets).length, MAX_LINK_KEYS)} tickets in Jira
-              </a>}
+              {patternLink(group) && <JiraLink href={patternLink(group)}>
+                {(() => {
+                  const n = Math.min((group.keys || group.tickets).length, MAX_LINK_KEYS);
+                  return group.estimated ? `Open the ${n} sampled tickets in Jira` : `Open ${n} tickets in Jira`;
+                })()}
+              </JiraLink>}
             </div>
             <div className="nq-table-wrap">
               <table className="nq-table">
                 <thead><tr><th>Key</th><th>Summary</th><th>Status</th><th>Created</th></tr></thead>
                 <tbody>{group.tickets.map((ticket) => <tr key={ticket.key}>
-                  <td><a className="nq-table__key" href={ticket.url} target="_blank" rel="noreferrer">{ticket.key}</a></td>
+                  <td><JiraLink className="nq-table__key" href={ticketLink(ticket)}>{ticket.key}</JiraLink></td>
                   <td>{ticket.summary}</td>
                   <td><Lozenge>{ticket.status}</Lozenge></td>
                   <td>{new Date(ticket.created).toLocaleDateString()}</td>
