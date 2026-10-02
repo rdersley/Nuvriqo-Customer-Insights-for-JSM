@@ -10,10 +10,11 @@
 // - Non-production environments allow a missing licence so the app can be
 //   tested. A simulated licence (`forge install --license inactive`) or the
 //   LICENSE_OVERRIDE variable (`active` / `inactive`) is still honoured there.
-// - Production installs with no licence object (Developer Console sharing link,
-//   or licensing switched off for a test) count as an evaluation only when the
-//   site's cloud ID is in EVALUATION_CLOUD_IDS (comma separated, set with
-//   `forge variables set -e production`). An inactive licence is never overridden.
+// - Sites whose cloud ID is in EVALUATION_CLOUD_IDS (comma separated, set with
+//   `forge variables set -e production`) are allowed in production whatever the
+//   licence says: internal and evaluation sites installed from the Developer
+//   Console sharing link get an inactive licence once licensing is on. Only the
+//   app's owner can set the variable.
 // The app has no triggers, so the resolvers are the only thing to gate.
 
 const PRODUCTION = 'PRODUCTION';
@@ -44,9 +45,12 @@ function evaluationCloudIds(env) {
 export function licenseAllows(context, env = process.env) {
   const license = context?.license;
   if (isProductionContext(context)) {
-    if (license != null) return license.active === true;
     const cloudId = String(context?.cloudId ?? '').toLowerCase();
-    return Boolean(cloudId) && evaluationCloudIds(env).has(cloudId);
+    if (cloudId && evaluationCloudIds(env).has(cloudId)) return true;
+    if (license?.active === true) return true;
+    // Why access was refused, for support. No personal data.
+    console.log(`licence: refused (${license == null ? 'no licence' : 'licence inactive'}, ${cloudId ? 'site not on the evaluation list' : 'no cloud id'})`);
+    return false;
   }
 
   const override = licenseOverride(env);
