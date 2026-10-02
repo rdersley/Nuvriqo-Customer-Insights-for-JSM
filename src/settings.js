@@ -103,6 +103,7 @@ export function readValues(value, kind) {
     case 'named':
     case 'strings': return (Array.isArray(value) ? value : [value]).map(one).filter(Boolean);
     case 'requestType': return [clip(value?.requestType?.name, 80)].filter(Boolean);
+    case 'organizations': return (Array.isArray(value) ? value : [value]).map((o) => clip(o?.name, 200)).filter(Boolean);
     default: return [];
   }
 }
@@ -133,7 +134,7 @@ const SYSTEM_JQL = { components: 'component', priority: 'priority', issuetype: '
 export function jqlEmptyClause(b) {
   const custom = /^customfield_(\d+)$/.exec(b?.id || '');
   const field = custom ? `cf[${custom[1]}]` : SYSTEM_JQL[b?.id];
-  return field && b.kind !== 'requestType' ? `${field} is EMPTY` : null;
+  return field && !['requestType', 'organizations'].includes(b.kind) ? `${field} is EMPTY` : null;
 }
 
 /**
@@ -143,6 +144,8 @@ export function jqlEmptyClause(b) {
  */
 export function jqlClause(b, value) {
   if (!b || value === undefined || value === null || value === '') return null;
+  // JSM organisations are searched by name with the organizations clause.
+  if (b.kind === 'organizations') return `organizations = ${quote(value)}`;
   const custom = /^customfield_(\d+)$/.exec(b.id);
   const field = custom ? `cf[${custom[1]}]` : SYSTEM_JQL[b.id];
   if (!field) return null;
@@ -159,8 +162,22 @@ export function jqlClause(b, value) {
 export function dimensionsOf(issue, breakdowns) {
   const dims = {};
   for (const b of breakdowns) {
-    const values = readValues(issue?.fields?.[b.id], b.kind);
+    const read = readValues(issue?.fields?.[b.id], b.kind);
+    // `only` keeps the values an analysis is about (the selected organisations).
+    const values = b.only ? read.filter((v) => b.only.includes(v)) : read;
     if (values.length) dims[b.id] = [...new Set(values)];
   }
   return dims;
+}
+
+const ORG_FIELD = 'com.atlassian.servicedesk:sd-customer-organizations';
+
+/**
+ * A breakdown by JSM organisation, for analyses that cover several of them:
+ * found from the site's own Organizations field (GET /rest/api/3/field),
+ * limited to the organisations selected. Null if the site has no such field.
+ */
+export function organisationBreakdown(fields, names) {
+  const field = (Array.isArray(fields) ? fields : []).find((f) => String(f?.schema?.custom || '') === ORG_FIELD);
+  return field ? { id: String(field.id), label: 'Organisation', kind: 'organizations', portal: false, only: names } : null;
 }

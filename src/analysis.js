@@ -458,7 +458,8 @@ const DATA_QUALITY_EXAMPLES = 5;
 export function buildDataQuality(breakdowns, current, currentScale, placeholders = []) {
   const marks = new Set(placeholders.map(normalValue));
   const scale = (n) => Math.round(n * currentScale);
-  return breakdowns.map(({ id, label, kind }) => {
+  // Organisation is always set on these tickets (it's how they were found).
+  return breakdowns.filter((b) => b.kind !== 'organizations').map(({ id, label, kind }) => {
     const placeholderCounts = {};
     const problems = [];
     let missing = 0;

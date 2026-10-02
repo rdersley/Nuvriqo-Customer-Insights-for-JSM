@@ -70,7 +70,7 @@ function JiraLink({ href, className, children }) {
 }
 function App() {
   const [orgs, setOrgs] = useState([]);
-  const [organizationId, setOrganizationId] = useState('');
+  const [orgIds, setOrgIds] = useState([]); // selected organisations; the first is the main one
   const [from, setFrom] = useState(DEFAULT_RANGE.from);
   const [to, setTo] = useState(DEFAULT_RANGE.to);
   const [lastQuery, setLastQuery] = useState(null);
@@ -110,7 +110,7 @@ function App() {
       const list = result?.organizations || [];
       setLicensed(result?.licensed !== false);
       setOrgs(list);
-      if (list.length) setOrganizationId(String(list[0].id));
+      if (list.length) setOrgIds([String(list[0].id)]);
       if (result?.licensed !== false) invoke('getAlerts').then((a) => setAlerts(a?.alerts || [])).catch(() => {});
     }).catch((e) => setError(e.message || 'Could not load customer organisations.'))
       .finally(() => setLoadingOrgs(false));
@@ -118,7 +118,7 @@ function App() {
 
   // "Analyse" on an alert fills in the form; the run starts once the choices apply.
   useEffect(() => {
-    if (pendingRun && selectedOrg?.id === pendingRun.orgId && from === pendingRun.from && to === pendingRun.to) {
+    if (pendingRun && orgIds.length === 1 && orgIds[0] === pendingRun.orgId && from === pendingRun.from && to === pendingRun.to) {
       setPendingRun(null);
       runAnalysis();
     }
@@ -126,7 +126,7 @@ function App() {
 
   function analyseAlert(alert) {
     if (!orgs.some((o) => o.id === alert.organization.id)) return;
-    setOrganizationId(alert.organization.id); setFrom(alert.window.from); setTo(alert.window.to); setProjectsText('');
+    setOrgIds([alert.organization.id]); setFrom(alert.window.from); setTo(alert.window.to); setProjectsText('');
     setPendingRun({ orgId: alert.organization.id, from: alert.window.from, to: alert.window.to });
   }
 
@@ -135,7 +135,10 @@ function App() {
     try { await invoke('dismissAlert', { id: alert.id }); } catch (e) { setError(e.message || 'The alert couldn’t be dismissed.'); }
   }
 
-  const selectedOrg = orgs.find((org) => org.id === organizationId);
+  const selectedOrgs = orgIds.map((id) => orgs.find((org) => org.id === id)).filter(Boolean);
+  const selectedOrg = selectedOrgs[0];
+  const MAX_ORGS = 10;
+  const orgLabel = selectedOrgs.length > 1 ? `${selectedOrgs.length} organisations` : selectedOrg?.name;
   const projects = projectsText.split(/[\s,]+/).map((x) => x.trim().toUpperCase()).filter(Boolean);
   const maxGroup = Math.max(1, ...(report?.groups || []).map((g) => g.count));
   const graphMax = Math.max(1, ...(report?.timeSeries || []).map((p) => p.count));
@@ -148,7 +151,7 @@ function App() {
     setFilter(nextFilter);
     cancelFull.current = true;
     setLoadingReport(true); setError(''); setReport(null); setAi(null); setAiError(''); setFullRun(null); setFullError('');
-    const query = { organization: selectedOrg, startDate: from, endDate: to, projects, timeZone: LOCAL_ZONE, ...(nextFilter && { filter: { id: nextFilter.id, value: nextFilter.value } }) };
+    const query = { organization: selectedOrg, organizations: selectedOrgs, startDate: from, endDate: to, projects, timeZone: LOCAL_ZONE, ...(nextFilter && { filter: { id: nextFilter.id, value: nextFilter.value } }) };
     try {
       const result = await invoke('analyze', query);
       setReport(result);
@@ -175,7 +178,8 @@ function App() {
     } finally { setFullRun(null); }
   }
 
-  const reportOrgId = lastQuery?.organization?.id;
+  // Portal reports are for one organisation, so publishing needs a single-organisation analysis.
+  const reportOrgId = lastQuery?.organizations?.length > 1 ? null : lastQuery?.organization?.id;
   useEffect(() => {
     setPublication(null); setDraft(null); setPublishError('');
     if (!report || !reportOrgId) return;
@@ -296,7 +300,7 @@ function App() {
     const csv = rows.map((r) => r.map((cell) => `"${String(cell ?? '').replaceAll('"', '""')}"`).join(',')).join('\n');
     const link = document.createElement('a');
     link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-    link.download = `customer-insights-${selectedOrg.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${from}-${to}.csv`;
+    link.download = `customer-insights-${(selectedOrgs.length > 1 ? `${selectedOrgs.length}-organisations` : selectedOrg.name).toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${from}-${to}.csv`;
     link.click(); URL.revokeObjectURL(link.href);
   }
 
@@ -359,10 +363,17 @@ function App() {
     {licensed && <Card>
       <form className="nq-filters ci-filters" onSubmit={runAnalysis}>
         <Field label="Customer organisation" htmlFor="ci-org">
-          <select id="ci-org" className="nq-select" value={organizationId} onChange={(e) => setOrganizationId(e.target.value)} disabled={loadingOrgs || !orgs.length}>
+          <select id="ci-org" className="nq-select" value={orgIds[0] || ''} onChange={(e) => setOrgIds((ids) => [e.target.value, ...ids.slice(1).filter((id) => id !== e.target.value)])} disabled={loadingOrgs || !orgs.length}>
             {loadingOrgs && <option>Loading organisations…</option>}
             {!loadingOrgs && !orgs.length && <option value="">No organisations found</option>}
             {orgs.map((org) => <option value={org.id} key={org.id}>{org.name}</option>)}
+          </select>
+        </Field>
+        <Field label={`Add organisations (${selectedOrgs.length} of ${MAX_ORGS})`} htmlFor="ci-org-add">
+          <select id="ci-org-add" className="nq-select" value="" disabled={loadingOrgs || selectedOrgs.length >= MAX_ORGS || orgs.length < 2}
+            onChange={(e) => { const id = e.target.value; if (id) setOrgIds((ids) => (ids.includes(id) ? ids : [...ids, id])); }}>
+            <option value="">{selectedOrgs.length >= MAX_ORGS ? 'Up to 10 at a time' : 'Add another…'}</option>
+            {orgs.filter((org) => !orgIds.includes(org.id)).map((org) => <option value={org.id} key={org.id}>{org.name}</option>)}
           </select>
         </Field>
         <Field label="Period" htmlFor="ci-period">
@@ -384,7 +395,18 @@ function App() {
           {loadingReport ? 'Analysing…' : 'Run analysis'}
         </Button>
       </form>
-      <p className="nq-muted">Uses tickets shared with this organisation. Results follow your Jira permissions.</p>
+      {selectedOrgs.length > 1 && <div className="ci-chips" aria-label="Selected organisations">
+        {selectedOrgs.map((org) => <span className="ci-chip" key={org.id}>
+          {org.name}
+          <button type="button" aria-label={`Remove ${org.name}`} onClick={() => setOrgIds((ids) => ids.filter((id) => id !== org.id))}>×</button>
+        </span>)}
+        <Button small appearance="subtle" onClick={() => setOrgIds((ids) => ids.slice(0, 1))}>Clear extra</Button>
+      </div>}
+      <p className="nq-muted">
+        {selectedOrgs.length > 1
+          ? 'Analyses tickets shared with any of these organisations together, with a breakdown by organisation. Portal reports need a single organisation.'
+          : 'Uses tickets shared with this organisation.'} Results follow your Jira permissions.
+      </p>
     </Card>}
 
     {error && <Notice kind="error" title="We couldn’t complete that request.">{error}</Notice>}
@@ -399,7 +421,7 @@ function App() {
     {licensed && !loadingOrgs && !report && !loadingReport && !error && <Card>
       <EmptyState
         title="Find the issues behind the numbers"
-        actions={<Button appearance="primary" onClick={runAnalysis} disabled={!selectedOrg}>Analyse {selectedOrg?.name || 'customer tickets'}</Button>}
+        actions={<Button appearance="primary" onClick={runAnalysis} disabled={!selectedOrg}>Analyse {orgLabel || 'customer tickets'}</Button>}
       >
         Choose a customer and date range to see ticket patterns, volume changes and example requests. Only Jira ticket data your account can access is analysed.
       </EmptyState>
@@ -409,7 +431,7 @@ function App() {
 
     {report && <>
       <div className="nq-kpis">
-        <Kpi icon="▤" label="Tickets in period" value={report.currentCount.toLocaleString()} hint={`for ${report.organization}`} />
+        <Kpi icon="▤" label="Tickets in period" value={report.currentCount.toLocaleString()} hint={report.organizations?.length > 2 ? `for ${report.organizations.length} organisations` : `for ${report.organization}`} />
         <Kpi icon="↗" kind={report.change > 0 ? 'warning' : report.change < 0 ? 'success' : 'info'} label="Vs previous period" value={totalChange} hint={`${signed(report.change)} tickets · previous ${report.previousCount}`} />
         <Kpi icon="⌘" kind="warning" label="Recurring patterns" value={groups.length} hint={`with at least ${report.minPatternSize || 2} related tickets`} />
         <Kpi icon="✓" kind="success" label="Tickets analysed" value={report.analyzedCount.toLocaleString()} hint={report.sampled ? 'sample spread across the period' : 'rule-based text matching'} />
@@ -613,7 +635,9 @@ function App() {
           : <EmptyState compact title="No repeated issue patterns detected">There are no groups of similar tickets with more than one request in this period.</EmptyState>}
       </Card>
 
-      {publication?.portalEnabled !== false && <Card
+      {!reportOrgId && report.organizations?.length > 1 && <p className="nq-muted">Portal reports are published for one organisation at a time. Choose a single organisation to prepare one.</p>}
+
+      {reportOrgId && publication?.portalEnabled !== false && <Card
         title="Customer portal"
         description={`What ${report.organization}'s portal users see under “Service report” in their user menu.`}
         actions={publication?.canPublish && !draft && <>
@@ -692,7 +716,7 @@ function App() {
         <Button appearance="link" small onClick={() => setQueryOpen(!queryOpen)}>{queryOpen ? 'Hide' : 'Show'} search details</Button>
       </div>
       {queryOpen && <Notice title="Data source">
-        Jira issues with <code>organizations = "{report.organization}"</code>, created between {report.startDate} and {report.endDate}. A preceding equal-length period is used for comparison. Only tickets visible to your Jira account are included.
+        Jira issues with <code>{report.baseJql?.split(' AND created')[0] || `organizations = "${report.organization}"`}</code>, created between {report.startDate} and {report.endDate}. A preceding equal-length period is used for comparison. Only tickets visible to your Jira account are included.
       </Notice>}
     </>}
 
