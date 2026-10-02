@@ -18,7 +18,7 @@ const input = {
 };
 
 test('snapshots keep themes and counts, and drop tickets and unknown fields', () => {
-  const snap = snapshotFrom(input, { publishedBy: 'acc-1', now: new Date('2026-09-30T10:00:00Z') });
+  const snap = snapshotFrom(input, { now: new Date('2026-09-30T10:00:00Z') });
   assert.equal(snap.totals.changePercent, 51);
   assert.equal(snap.patterns.length, 15);
   assert.deepEqual(snap.patterns[0], { title: 'vPOS app freezes', summary: 'Crew report the app freezing.', count: 257, previousCount: 5, estimated: true });
@@ -30,8 +30,9 @@ test('snapshots keep themes and counts, and drop tickets and unknown fields', ()
   assert.equal(snap.publishedAt, '2026-09-30T10:00:00.000Z');
 });
 
-test('customers do not see who published', () => {
-  const view = portalView(snapshotFrom(input, { publishedBy: 'acc-1' }));
+test('no account ids are stored, and older snapshots that have one hide it', () => {
+  assert.equal('publishedBy' in snapshotFrom(input), false);
+  const view = portalView({ ...snapshotFrom(input), publishedBy: 'acc-1' }); // as stored by older versions
   assert.equal('publishedBy' in view, false);
   assert.equal(portalView(null), null);
 });

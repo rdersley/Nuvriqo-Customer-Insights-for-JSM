@@ -55,7 +55,8 @@ test('settings are validated against the site fields: known ids only, no repeats
     ['priority', 'Priority', 'named'],
   ]);
   assert.equal(saved.portalEnabled, false);
-  assert.equal(sanitizeSettings({}, selectable).portalEnabled, true);
+  assert.equal(sanitizeSettings({}, selectable).portalEnabled, false); // opt-in per site
+  assert.equal(sanitizeSettings({ portalEnabled: true }, selectable).portalEnabled, true);
 });
 
 test('up to 5 breakdown fields, and a bounded pattern minimum defaulting to 3', () => {

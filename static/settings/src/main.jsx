@@ -179,11 +179,11 @@ function App() {
 
       <Card title="Customer portal" description="Let Jira admins and project admins publish reviewed reports that customers see under “Service report” in the portal.">
         <label className="cs-check">
-          <input type="checkbox" className="nq-check" checked={draft.portalEnabled && !state.portalForcedOff} disabled={state.portalForcedOff}
+          <input type="checkbox" className="nq-check" checked={draft.portalEnabled === true}
             onChange={(e) => { setSaved(false); setDraft((d) => ({ ...d, portalEnabled: e.target.checked })); }} />
           <span>Allow publishing reports to the customer portal</span>
         </label>
-        {state.portalForcedOff && <p className="nq-muted">Switched off for this installation by the app’s deployment settings.</p>}
+        <p className="nq-muted">Off by default. While it’s off, “Service report” in the portal menu tells customers reports aren’t available, and nothing is published.</p>
       </Card>
 
       <ActionBar state={saving ? 'Saving…' : dirty ? 'Unsaved changes' : saved ? 'Saved' : ''}>

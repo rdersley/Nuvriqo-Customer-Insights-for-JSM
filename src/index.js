@@ -79,7 +79,8 @@ define('dismissAlert', async ({ payload, context }) => {
   if (!alert) return { dismissed: true };
   const visible = await listOrganizations();
   if (!visible.some((o) => o.id === alert.organization.id)) throw new Error('You can’t change alerts for that organisation.');
-  await saveAlert({ ...alert, dismissedAt: new Date().toISOString(), dismissedBy: context?.accountId });
+  // Who dismissed it isn't kept: the app stores no account ids.
+  await saveAlert({ ...alert, dismissedAt: new Date().toISOString() });
   return { dismissed: true };
 });
 
@@ -166,11 +167,10 @@ async function visibleOrganisation(orgId) {
   return { id: String(data.id), name: data.name };
 }
 
-// Portal publishing follows the admin setting. `forge variables set
-// PORTAL_REPORTS off` forces it off, for releases without the portal module.
+// Portal publishing follows each site's admin setting. (Not a Forge variable:
+// those apply to every site installed from an environment.)
 async function portalEnabled() {
-  if (String(process.env.PORTAL_REPORTS ?? '').trim().toLowerCase() === 'off') return false;
-  return (await loadSettings()).portalEnabled !== false;
+  return (await loadSettings()).portalEnabled === true;
 }
 
 define('getPublication', async ({ payload, context }) => {
@@ -191,7 +191,7 @@ define('publishReport', async ({ payload, context }) => {
   if (!(await portalEnabled())) throw new Error('Portal reports are switched off on this site.');
   if (!(await canPublish())) throw new Error('Only Jira admins and project admins can publish to the portal.');
   const organization = await visibleOrganisation(payload?.snapshot?.organization?.id);
-  const snapshot = snapshotFrom({ ...payload.snapshot, organization }, { publishedBy: context?.accountId });
+  const snapshot = snapshotFrom({ ...payload.snapshot, organization });
   const config = liveConfigFrom({
     ...payload?.live,
     period: snapshot.period,
@@ -260,7 +260,6 @@ define('getSettings', async ({ context }) => {
     settings,
     fields,
     organizations,
-    portalForcedOff: String(process.env.PORTAL_REPORTS ?? '').trim().toLowerCase() === 'off',
   };
 });
 
