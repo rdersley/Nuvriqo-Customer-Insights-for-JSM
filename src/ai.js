@@ -5,6 +5,9 @@
 // first use; tests pass their own chatFn.
 const forgeChat = async (prompt) => (await import('@forge/llm')).chat(prompt);
 import { median, patternTrend, topShares } from './analysis.js';
+import { hoursOf, outOfHoursShare, peakWindow, windowText } from './timeOfDay.js';
+
+const peakText = (hours) => { const w = peakWindow(hours); return w ? `${windowText(w)} (${w.share}%)` : null; };
 
 // Preferred first. Haiku 4.5 is avoided: Forge retires it on 2026-10-15.
 export const MODELS = ['claude-sonnet-5', 'claude-sonnet-4-6'];
@@ -35,6 +38,12 @@ export function aiInput(report) {
     dataQuality: (report.dataQuality || []).filter((d) => d.share > 0).map((d) => ({
       field: clip(d.label, 40), shareMissingOrPlaceholder: d.share, placeholders: d.placeholders.slice(0, 3).map((p) => clip(p.value, 40)),
     })),
+    // When tickets are created (busiest 3 hours, and the share outside 08:00–18:00 Mon–Fri).
+    whenCreated: report.timeOfDay ? {
+      timeZone: report.timeOfDay.timeZone,
+      busiestHours: peakText(hoursOf(report.timeOfDay.grid)),
+      outOfHoursShare: outOfHoursShare(report.timeOfDay.grid),
+    } : null,
     // Chart buckets (days or weeks) that each pattern's trend follows.
     trendBuckets: (report.timeSeries || []).map((p) => p.date),
     patterns: (report.groups || []).slice(0, MAX_PATTERNS).map((g, index) => ({
@@ -46,6 +55,7 @@ export function aiInput(report) {
       medianHoursToResolve: median(g.resolvedHours),
       openShare: g.sampleCount ? Math.round(((g.openCount || 0) / g.sampleCount) * 100) : null,
       trend: patternTrend(g, report)?.map((p) => p.count) || null,
+      busiestHours: peakText(g.hours),
       where: Object.fromEntries((report.breakdownFields || []).map((f) => [clip(f.label, 40), topShares(g, f.id).map((s) => `${clip(s.value, 60)} ${s.share}%`)]).filter(([, v]) => v.length)),
     })),
   };
@@ -86,6 +96,7 @@ Use only the data given. Do not invent causes, numbers, dates or ticket details.
 breakdowns and each pattern's "where" show how tickets split across fields the admin chose (for example base or device type). Mention a concentration only when it is clear (for example most of a pattern at one base, or one value growing fast).
 medianHoursToResolve and openShare show how long problems take to fix and how many are still open; point out issues that are clearly slower to resolve than the rest.
 Each pattern's trend gives tickets per trendBuckets entry; say whether a big issue is new, steady or fading when the trend shows it clearly.
+whenCreated and each pattern's busiestHours say when tickets are raised (in whenCreated.timeZone); mention it when a pattern clusters at particular times, such as the start of shifts.
 dataQuality lists fields that are often empty or set to a placeholder; mention it in actions when the share is high (for example above 20%), as it limits what the breakdowns can show.
 Ticket totals are exact. When patternCountsAreEstimates is true, pattern counts are scaled up from a sample: describe them approximately ("around 250", "a handful", "several times more") and never quote small previous-period pattern counts as exact figures.
 Write in plain British English. Call report_insights once.`;

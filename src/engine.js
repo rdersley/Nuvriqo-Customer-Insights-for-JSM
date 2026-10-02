@@ -3,6 +3,7 @@
 import { asApp, asUser, route } from '@forge/api';
 import { buildReport, chartBuckets } from './analysis.js';
 import { dimensionsOf, jqlClause } from './settings.js';
+import { validTimeZone } from './timeOfDay.js';
 
 export const DAY = 86400000;
 const PERIOD_SAMPLE = 900; // most tickets analysed per period (groupIssues' cap)
@@ -126,6 +127,8 @@ export function parseQuery(payload, filter = null) {
     endDate,
     cleanProjects,
     filter,
+    // The agent's time zone, for when tickets are created; UTC for background jobs.
+    timeZone: validTimeZone(payload?.timeZone),
     previousStart: new Date(Date.parse(`${startDate}T00:00:00Z`) - fullSpan * DAY).toISOString().slice(0, 10),
     endExclusive: new Date(Date.parse(`${endDate}T00:00:00Z`) + DAY).toISOString().slice(0, 10),
     between: (from, toExclusive) => `organizations = "${escapeJql(organization.name)}" AND created >= "${from}" AND created < "${toExclusive}"${projectClause}${filterClause}`,
@@ -182,7 +185,7 @@ export async function runAnalysis(query, { breakdowns = [], minPatternSize, plac
     timeSeries = buckets.map((b, i) => ({ date: b.date, count: counts[i] }));
   }
   const issues = [...currentIssues, ...previousIssues];
-  const report = buildReport(issues, startDate, endDate, { current: currentTotal, previous: previousTotal, timeSeries }, { breakdowns, minPatternSize, placeholders });
+  const report = buildReport(issues, startDate, endDate, { current: currentTotal, previous: previousTotal, timeSeries }, { breakdowns, minPatternSize, placeholders, timeZone: query.timeZone });
   console.log(`analysis (${mode}): ${currentTotal}+${previousTotal} tickets, ${issues.length} fetched in ${Date.now() - startedAt}ms`);
   return {
     ...report,

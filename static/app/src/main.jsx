@@ -11,6 +11,25 @@ import { applyMerges, median, patternTrend, topShares } from '../../../src/analy
 import { jqlClause, jqlEmptyClause } from '../../../src/settings.js';
 import { changeText } from '../../../src/alertText.js';
 import { duration, sparkPath, trendWord } from '../../../src/trend.js';
+import { DAYS, hoursOf, outOfHoursShare, peakWindow, WORKING, windowText } from '../../../src/timeOfDay.js';
+
+// The agent's own time zone, so "when tickets arrive" reads in local time.
+const LOCAL_ZONE = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
+
+/** Day-of-week × hour heatmap; cell shade is the share of the busiest cell. */
+function TimeHeatmap({ grid }) {
+  const max = Math.max(1, ...grid.flat());
+  return <div className="ci-heat" role="img" aria-label="Tickets by day of week and hour of day">
+    <span />
+    {Array.from({ length: 24 }, (_, h) => <span key={h} className="ci-heat__hour">{h % 3 === 0 ? String(h).padStart(2, '0') : ''}</span>)}
+    {grid.map((row, d) => <React.Fragment key={DAYS[d]}>
+      <span className="ci-heat__day">{DAYS[d]}</span>
+      {row.map((n, h) => <span key={h} className="ci-heat__cell" title={`${DAYS[d]} ${String(h).padStart(2, '0')}:00 – ${n} ticket${n === 1 ? '' : 's'}`}>
+        {n > 0 && <i style={{ opacity: 0.15 + 0.85 * (n / max) }} />}
+      </span>)}
+    </React.Fragment>)}
+  </div>;
+}
 import './styles.css';
 
 enableTheme(view);
@@ -129,7 +148,7 @@ function App() {
     setFilter(nextFilter);
     cancelFull.current = true;
     setLoadingReport(true); setError(''); setReport(null); setAi(null); setAiError(''); setFullRun(null); setFullError('');
-    const query = { organization: selectedOrg, startDate: from, endDate: to, projects, ...(nextFilter && { filter: { id: nextFilter.id, value: nextFilter.value } }) };
+    const query = { organization: selectedOrg, startDate: from, endDate: to, projects, timeZone: LOCAL_ZONE, ...(nextFilter && { filter: { id: nextFilter.id, value: nextFilter.value } }) };
     try {
       const result = await invoke('analyze', query);
       setReport(result);
@@ -264,6 +283,10 @@ function App() {
     if (ai?.overview) rows.push(['AI overview', ai.overview]);
     rows.push([], ['Pattern', 'AI name', 'Ticket count', 'Previous period', 'Change', 'Trend', 'Example ticket']);
     groups.forEach((group, index) => rows.push([group.theme, aiPattern(index)?.title || '', group.count, group.previousCount, group.changePercent === null ? 'New' : `${group.changePercent}%`, trendWord(patternTrend(group, report)), group.tickets[0]?.key || '']));
+    if (report.timeOfDay) {
+      rows.push([], [`Tickets by hour (${report.timeOfDay.timeZone})`, ...DAYS]);
+      for (let h = 0; h < 24; h += 1) rows.push([`${String(h).padStart(2, '0')}:00`, ...report.timeOfDay.grid.map((row) => row[h])]);
+    }
     rows.push([], ['Date bucket', 'Tickets']);
     for (const point of report.timeSeries) rows.push([point.date, point.count]);
     if (qualityIssues.length) {
@@ -466,6 +489,23 @@ function App() {
         })}</div>
         : <p className="nq-muted">Tip: a Jira admin can add breakdowns by base, device type or any other field in <strong>Jira settings → Apps → Customer Insights</strong>.</p>}
 
+      {report.timeOfDay?.analysed > 0 && (() => {
+        const { grid, timeZone, estimated, analysed } = report.timeOfDay;
+        const hours = hoursOf(grid);
+        const peak = peakWindow(hours);
+        const outside = outOfHoursShare(grid);
+        const dayTotals = grid.map((row) => row.reduce((a, n) => a + n, 0));
+        const busiestDay = DAYS[dayTotals.indexOf(Math.max(...dayTotals))];
+        return <Card title="When tickets arrive" description={`Created time in ${timeZone}. ${estimated ? `Shares of the ${analysed.toLocaleString()} analysed tickets.` : 'All tickets in the period.'}`}>
+          <div className="nq-kpis ci-when">
+            {peak && <Kpi icon="◷" label="Busiest 3 hours" value={windowText(peak)} hint={`${peak.share}% of tickets`} />}
+            <Kpi icon="▦" label="Busiest day" value={busiestDay} hint={`${Math.round((Math.max(...dayTotals) / Math.max(1, analysed)) * 100)}% of tickets`} />
+            {outside !== null && <Kpi icon="☾" kind={outside >= 30 ? 'warning' : 'info'} label="Out of hours" value={`${outside}%`} hint={`outside ${String(WORKING.from).padStart(2, '0')}:00–${WORKING.to}:00 Mon–Fri`} />}
+          </div>
+          <TimeHeatmap grid={grid} />
+        </Card>;
+      })()}
+
       {qualityIssues.length > 0 && <Card
         title="Data quality"
         description={`Breakdown fields left empty or set to a placeholder such as “Unknown”. ${qualityIssues.some((d) => d.estimated) ? 'Estimated from the sample.' : 'All tickets in the period.'}`}
@@ -548,6 +588,7 @@ function App() {
             <div className="nq-spread ci-pattern__meta">
               <span className="nq-muted">
                 {trendWord(patternTrend(group, report)) && <>{trendWord(patternTrend(group, report))} through the period · </>}
+                {peakWindow(group.hours) && <>mostly {windowText(peakWindow(group.hours))} ({peakWindow(group.hours).share}%) · </>}
                 {resolutionText(groupResolution(group))}{group.estimated ? ' (from the sample)' : ''}
               </span>
               {patternLink(group) && <JiraLink href={patternLink(group)}>
