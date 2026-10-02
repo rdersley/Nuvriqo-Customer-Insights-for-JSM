@@ -41,3 +41,16 @@ test('Retry-After is honoured but capped', () => {
   assert.equal(retryDelay(response(429, '120'), 0), 8000);
   assert.equal(retryDelay(response(429, null), 2), 4000);
 });
+
+test('several organisations are searched together, up to 10, with names escaped', async () => {
+  const { organisationsOf } = await import('../src/engine.js');
+  const base = { startDate: '2026-09-01', endDate: '2026-09-30' };
+  const one = parseQuery({ ...base, organization: { id: '7', name: 'Ryanair Crew' } });
+  assert.match(one.between('2026-09-01', '2026-10-01'), /^organizations = "Ryanair Crew" AND/);
+  const many = parseQuery({ ...base, organizations: [{ id: '7', name: 'Ryanair Crew' }, { id: '8', name: 'Aer "Lingus"' }, { id: '7', name: 'Ryanair Crew' }] });
+  assert.match(many.between('2026-09-01', '2026-10-01'), /^organizations in \("Ryanair Crew", "Aer \\"Lingus\\""\) AND/);
+  assert.deepEqual(many.organizations.map((o) => o.name), ['Ryanair Crew', 'Aer "Lingus"']);
+  assert.equal(many.organization.name, 'Ryanair Crew');
+  assert.throws(() => organisationsOf({ organizations: Array.from({ length: 11 }, (_, i) => ({ name: `Org ${i}` })) }), /up to 10/);
+  assert.throws(() => parseQuery({ ...base, organizations: [] }), /Choose an organization/);
+});

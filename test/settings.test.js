@@ -124,3 +124,15 @@ test('alert settings: off by default, watched organisations from the visible lis
   const many = Array.from({ length: 40 }, (_, i) => ({ id: String(i), name: `Org ${i}` }));
   assert.equal(sanitizeAlerts({ organizations: many }, many).organizations.length, 25);
 });
+
+test('an Organisation breakdown comes from the site field, limited to the selected organisations', async () => {
+  const { organisationBreakdown } = await import('../src/settings.js');
+  const siteFields = [{ id: 'customfield_10002', name: 'Organizations', schema: { type: 'array', items: 'sd-customerorganization', custom: 'com.atlassian.servicedesk:sd-customer-organizations' } }];
+  const b = organisationBreakdown(siteFields, ['Ryanair Crew', 'Aer Lingus']);
+  assert.deepEqual({ id: b.id, kind: b.kind, portal: b.portal }, { id: 'customfield_10002', kind: 'organizations', portal: false });
+  assert.equal(organisationBreakdown([], ['A']), null);
+  const issue = { fields: { customfield_10002: [{ id: 1, name: 'Ryanair Crew' }, { id: 3, name: 'Some Other Org' }] } };
+  assert.deepEqual(dimensionsOf(issue, [b]), { customfield_10002: ['Ryanair Crew'] });
+  assert.equal(jqlClause(b, 'Aer "Lingus"'), 'organizations = "Aer \\"Lingus\\""');
+  assert.equal(jqlEmptyClause(b), null);
+});

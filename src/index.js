@@ -1,14 +1,14 @@
 import ResolverModule from '@forge/resolver';
 import { asUser, route } from '@forge/api';
 import { textOf } from './analysis.js';
-import { filterFor, parseQuery, readJson, runAnalysis, searchPage } from './engine.js';
+import { filterFor, organisationsOf, parseQuery, readJson, runAnalysis, searchPage } from './engine.js';
 import { licenseAllows, UNLICENSED_MESSAGE } from './license.js';
 import { suggestMerges, summarise } from './ai.js';
 import { snapshotFrom } from './publish.js';
 import { deleteLive, deleteReport, listAlerts, loadAlert, loadLiveConfig, loadLiveState, loadReport, loadSettings, saveAlert, saveLiveConfig, saveReport, saveSettings } from './storage.js';
 import { isLive, liveConfigFrom } from './live.js';
 import { queueAlertCheck, queueRefresh } from './liveJobs.js';
-import { sanitizeSettings, selectableFields } from './settings.js';
+import { organisationBreakdown, sanitizeSettings, selectableFields } from './settings.js';
 
 // This package is "type": "module"; Forge's bundler then hands CommonJS packages
 // over as their exports object, so the class sits on `.default`.
@@ -91,9 +91,22 @@ const FULL_PAGES_PER_CALL = 5;
 const FULL_CALL_BUDGET_MS = 12000;
 const DESCRIPTION_CHARS = 600;
 
+/**
+ * The admin's breakdown fields, plus "Organisation" when an analysis covers
+ * several organisations (limited to those selected).
+ */
+async function breakdownsFor(payload) {
+  const { breakdowns } = await loadSettings();
+  const organisations = organisationsOf(payload);
+  if (organisations.length < 2) return breakdowns;
+  const response = await asUser().requestJira(route`/rest/api/3/field`, { headers: { Accept: 'application/json' } });
+  const byOrganisation = organisationBreakdown(await readJson(response, 'Field list'), organisations.map((o) => o.name));
+  return byOrganisation ? [byOrganisation, ...breakdowns] : breakdowns;
+}
+
 define('fetchTickets', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
-  const { breakdowns } = await loadSettings();
+  const breakdowns = await breakdownsFor(payload);
   const query = parseQuery(payload, filterFor(payload?.filter, breakdowns));
   const { from, toExclusive } = payload;
   if (!ISO_DATE.test(from || '') || !ISO_DATE.test(toExclusive || '') || from < query.previousStart || toExclusive > query.endExclusive || from >= toExclusive) {
@@ -126,7 +139,8 @@ define('fetchTickets', async ({ payload, context }) => {
 
 define('analyze', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
-  const { breakdowns, minPatternSize, placeholders } = await loadSettings();
+  const { minPatternSize, placeholders } = await loadSettings();
+  const breakdowns = await breakdownsFor(payload);
   const query = parseQuery(payload, filterFor(payload?.filter, breakdowns));
   // Resolvers are killed at 25s; runAnalysis stops starting new fetches after the budget.
   return runAnalysis(query, { breakdowns, minPatternSize, placeholders, mode: 'user', budgetMs: FETCH_BUDGET_MS });

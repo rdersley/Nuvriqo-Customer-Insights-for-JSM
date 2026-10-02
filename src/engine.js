@@ -105,12 +105,34 @@ export function filterFor(payloadFilter, breakdowns) {
   return { id: field.id, label: field.label, value, clause };
 }
 
+export const MAX_ORGANISATIONS = 10;
+
+/**
+ * The organisations an analysis covers: payload.organizations (up to 10), or
+ * the single payload.organization older pages and background jobs send.
+ */
+export function organisationsOf(payload) {
+  const list = Array.isArray(payload?.organizations) && payload.organizations.length ? payload.organizations : [payload?.organization];
+  const seen = new Set();
+  const clean = list
+    .filter((o) => o && String(o.name ?? '').trim())
+    .map((o) => ({ ...(o.id !== undefined ? { id: String(o.id) } : {}), name: String(o.name).trim().slice(0, 200) }))
+    .filter((o) => !seen.has(o.name) && seen.add(o.name));
+  if (clean.length > MAX_ORGANISATIONS) throw new Error(`Choose up to ${MAX_ORGANISATIONS} organisations at a time.`);
+  return clean;
+}
+
 /** Validates an analysis request and builds its JQL. */
 export function parseQuery(payload, filter = null) {
-  const { organization, startDate, endDate, projects = [] } = payload || {};
-  if (!organization?.name || !ISO_DATE.test(startDate || '') || !ISO_DATE.test(endDate || '')) {
+  const { startDate, endDate, projects = [] } = payload || {};
+  const organizations = organisationsOf(payload);
+  const organization = organizations[0];
+  if (!organization || !ISO_DATE.test(startDate || '') || !ISO_DATE.test(endDate || '')) {
     throw new Error('Choose an organization and valid start and end dates.');
   }
+  const orgClause = organizations.length === 1
+    ? `organizations = "${escapeJql(organization.name)}"`
+    : `organizations in (${organizations.map((o) => `"${escapeJql(o.name)}"`).join(', ')})`;
   if (Number.isNaN(Date.parse(startDate)) || Number.isNaN(Date.parse(endDate))) throw new Error('Choose valid calendar dates.');
   if (startDate > endDate) throw new Error('Start date must be on or before end date.');
   const span = (Date.parse(endDate) - Date.parse(startDate)) / DAY;
@@ -123,6 +145,7 @@ export function parseQuery(payload, filter = null) {
   const fullSpan = Math.max(1, span + 1);
   return {
     organization,
+    organizations,
     startDate,
     endDate,
     cleanProjects,
@@ -131,7 +154,7 @@ export function parseQuery(payload, filter = null) {
     timeZone: validTimeZone(payload?.timeZone),
     previousStart: new Date(Date.parse(`${startDate}T00:00:00Z`) - fullSpan * DAY).toISOString().slice(0, 10),
     endExclusive: new Date(Date.parse(`${endDate}T00:00:00Z`) + DAY).toISOString().slice(0, 10),
-    between: (from, toExclusive) => `organizations = "${escapeJql(organization.name)}" AND created >= "${from}" AND created < "${toExclusive}"${projectClause}${filterClause}`,
+    between: (from, toExclusive) => `${orgClause} AND created >= "${from}" AND created < "${toExclusive}"${projectClause}${filterClause}`,
   };
 }
 
@@ -189,7 +212,9 @@ export async function runAnalysis(query, { breakdowns = [], minPatternSize, plac
   console.log(`analysis (${mode}): ${currentTotal}+${previousTotal} tickets, ${issues.length} fetched in ${Date.now() - startedAt}ms`);
   return {
     ...report,
-    organization: query.organization.name, startDate, endDate, previousStart, endExclusive,
+    organization: query.organizations.map((o) => o.name).join(', '),
+    organizations: query.organizations,
+    startDate, endDate, previousStart, endExclusive,
     projectCount: query.cleanProjects.length || null, totalFetched: issues.length, cutShort,
     breakdownFields: breakdowns.map(({ id, label, kind }) => ({ id, label, kind })),
     // For "Open in Jira" links: the period's search, and any drill-down filter.
