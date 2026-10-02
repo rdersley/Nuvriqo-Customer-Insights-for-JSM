@@ -1,8 +1,11 @@
 # Changelog
 
-## Unreleased
+## 1.2.0 (2026-10-02)
 
-Marketplace readiness.
+- **When tickets arrive:** a day-of-week × hour heatmap in the agent's time zone, with the busiest hours, busiest day and the share created out of hours. Each issue says when it mostly happens, and the AI summary can mention it.
+- **Licensing:** sites on the evaluation list are allowed even when Forge reports an inactive licence (sharing-link installs).
+
+Marketplace readiness:
 
 - **Customer portal is off by default** and switched on per site in settings. The `PORTAL_REPORTS` Forge variable is gone: variables apply to every site installed from an environment.
 - **No account ids are stored.** Reports no longer keep who published them and alerts no longer keep who dismissed them; ids stored by older versions are removed by the hourly job.
