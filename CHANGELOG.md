@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.3.0 (2026-10-02)
+
+- **Several organisations at once:** analyse up to 10 organisations together. A By Organisation breakdown is added automatically, with drill-down and Open in Jira, and each issue shows its split by organisation. Portal reports stay one organisation each.
+
 ## 1.2.0 (2026-10-02)
 
 - **When tickets arrive:** a day-of-week × hour heatmap in the agent's time zone, with the busiest hours, busiest day and the share created out of hours. Each issue says when it mostly happens, and the AI summary can mention it.
