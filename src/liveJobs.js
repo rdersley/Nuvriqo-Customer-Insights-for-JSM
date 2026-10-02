@@ -79,7 +79,7 @@ export async function refreshLiveReport(orgId) {
     const counts = liveCounts(report, config.approved, assignments);
     const linkTo = await portalLinker();
     for (const pattern of counts.patterns) for (const example of pattern.examples || []) example.url = linkTo(example.key);
-    const snapshot = snapshotFrom(refreshedSnapshotInput(config, report, counts, new Date(), { breakdowns }), { publishedBy: 'live-refresh', detailed: true });
+    const snapshot = snapshotFrom(refreshedSnapshotInput(config, report, counts, new Date(), { breakdowns }), { detailed: true });
     // Don't overwrite if the agent removed or replaced the live report meanwhile.
     const current = await loadLiveConfig(orgId);
     if (!current || current.publishedAt !== config.publishedAt) return { skipped: 'changed while refreshing' };
@@ -103,6 +103,8 @@ export const scheduler = async () => {
   }
   console.log(`live: scheduler checked ${configs.length}, queued ${queued}`);
   await scheduleAlerts();
+  const cleaned = await storage.scrubAccountIds();
+  if (cleaned) console.log(`privacy: removed account ids from ${cleaned} stored items`);
 };
 
 /** Queues a spike check for one organisation (the scheduler, or "Check now"). */

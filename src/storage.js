@@ -109,3 +109,30 @@ export async function listAlerts() {
   } while (cursor);
   return alerts.sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
 }
+
+/**
+ * Removes account ids older versions stored (a report's publishedBy, an
+ * alert's dismissedBy). The app keeps no personal data, so there is nothing
+ * to report to Atlassian's personal data API. Returns how many were cleaned.
+ */
+export async function scrubAccountIds() {
+  const { kvs: store, WhereConditions } = await import('@forge/kvs');
+  let cleaned = 0;
+  for (const [prefix, field] of [['published-report:', 'publishedBy'], ['alert:', 'dismissedBy']]) {
+    let cursor;
+    do {
+      let query = store.query().where('key', WhereConditions.beginsWith(prefix)).limit(50);
+      if (cursor) query = query.cursor(cursor);
+      const page = await query.getMany();
+      for (const { key, value } of page.results) {
+        if (value && field in value) {
+          const { [field]: removed, ...rest } = value;
+          await store.set(key, rest);
+          cleaned += 1;
+        }
+      }
+      cursor = page.nextCursor;
+    } while (cursor);
+  }
+  return cleaned;
+}

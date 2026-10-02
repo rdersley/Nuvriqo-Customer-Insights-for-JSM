@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+Marketplace readiness.
+
+- **Customer portal is off by default** and switched on per site in settings. The `PORTAL_REPORTS` Forge variable is gone: variables apply to every site installed from an environment.
+- **No account ids are stored.** Reports no longer keep who published them and alerts no longer keep who dismissed them; ids stored by older versions are removed by the hourly job.
+- **One production build:** `main` with licensing on; internal and evaluation sites are allowed through `EVALUATION_CLOUD_IDS`.
+- README rewritten to match the app, with a data and permissions table.
+
 ## 1.1.0 (2026-10-01)
 
 Needs permission to create Jira issues (`write:jira-work`), so a Jira admin approves the upgrade. Tickets are only created when an admin switches it on.

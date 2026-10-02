@@ -59,7 +59,7 @@ test('counts per approved issue add up, with Other as the exact remainder and ne
 test('a refreshed snapshot keeps the agent summary and its date, and hides agent notes from customers', () => {
   const config = liveConfigFrom({ schedule: 'daily', preset: 'last-30', approved, overview: 'Barsets are the main issue.', actions: ['Automate barsets'] }, { organization: org, now: new Date('2026-09-12T09:00:00Z') });
   const report = { startDate: '2026-09-01', endDate: '2026-09-30', currentCount: 50, previousCount: 40, timeSeries: [], groups: [] };
-  const snap = snapshotFrom(refreshedSnapshotInput(config, report, { patterns: [{ title: 'Open a barset', count: 10 }], unreviewed: [{ title: 'Printer paper', count: 4 }] }, now), { publishedBy: 'acc' });
+  const snap = snapshotFrom(refreshedSnapshotInput(config, report, { patterns: [{ title: 'Open a barset', count: 10 }], unreviewed: [{ title: 'Printer paper', count: 4 }] }, now));
   assert.equal(snap.overview, 'Barsets are the main issue.');
   assert.equal(snap.summaryWrittenAt, '2026-09-12T09:00:00.000Z');
   assert.equal(snap.refreshedAt, '2026-09-30T12:00:00.000Z');

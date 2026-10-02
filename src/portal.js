@@ -29,8 +29,7 @@ async function organisationsOf(accountId) {
 
 async function available(context) {
   if (!licenseAllows(context)) return false;
-  if (String(process.env.PORTAL_REPORTS ?? '').trim().toLowerCase() === 'off') return false;
-  return (await loadSettings()).portalEnabled !== false;
+  return (await loadSettings()).portalEnabled === true;
 }
 
 const viewer = (context) => (context?.accountId && context.accountId !== 'unidentified' ? context.accountId : null);

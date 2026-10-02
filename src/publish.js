@@ -57,7 +57,7 @@ function breakdownsOf(input) {
  * keeps ticket examples, trends, resolution and breakdowns; only the app's own
  * analysis passes it.
  */
-export function snapshotFrom(input, { publishedBy, now = new Date(), detailed = false } = {}) {
+export function snapshotFrom(input, { now = new Date(), detailed = false } = {}) {
   const orgId = String(input?.organization?.id ?? '');
   reportKey(orgId);
   const from = String(input?.period?.from ?? '');
@@ -93,7 +93,6 @@ export function snapshotFrom(input, { publishedBy, now = new Date(), detailed = 
     overview: clip(input?.overview, 1500),
     actions: (Array.isArray(input?.actions) ? input.actions : []).map((a) => clip(a, 240)).filter(Boolean).slice(0, 5),
     publishedAt: ISO_TIME.test(String(input?.publishedAt)) ? String(input.publishedAt) : now.toISOString(),
-    publishedBy: String(publishedBy || ''),
     // Live reports: the agent's summary keeps its date; numbers refresh.
     summaryWrittenAt: ISO_TIME.test(String(input?.summaryWrittenAt)) ? String(input.summaryWrittenAt) : now.toISOString(),
     refreshedAt: ISO_TIME.test(String(input?.refreshedAt)) ? String(input.refreshedAt) : now.toISOString(),
@@ -105,7 +104,7 @@ export function snapshotFrom(input, { publishedBy, now = new Date(), detailed = 
   };
 }
 
-/** What a customer sees: no publisher and no unreviewed agent notes. */
+/** What a customer sees: no unreviewed agent notes (or a publisher's account id, kept by older versions). */
 export function portalView(snapshot) {
   if (!snapshot) return null;
   const { publishedBy, unreviewed, ...visible } = snapshot;

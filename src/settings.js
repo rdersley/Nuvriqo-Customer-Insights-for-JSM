@@ -22,7 +22,7 @@ export const DEFAULT_ALERTS = {
   issueTypeName: 'Task',
   issueTypeId: '',
 };
-export const DEFAULT_SETTINGS = { breakdowns: [], portalEnabled: true, minPatternSize: MIN_PATTERN.default, placeholders: DEFAULT_PLACEHOLDERS, alerts: DEFAULT_ALERTS };
+export const DEFAULT_SETTINGS = { breakdowns: [], portalEnabled: false, minPatternSize: MIN_PATTERN.default, placeholders: DEFAULT_PLACEHOLDERS, alerts: DEFAULT_ALERTS };
 
 const whole = (value, { min, max, default: fallback }) => {
   const n = Number(value);
@@ -123,7 +123,7 @@ export function sanitizeSettings(input, selectable, organizations = []) {
     .map((b) => byId.get(String(b?.id)) && { ...byId.get(String(b.id)), label: clip(b.label, 40) || byId.get(String(b.id)).name, portal: b.portal === true })
     .filter((b) => b && !seen.has(b.id) && seen.add(b.id))
     .slice(0, MAX_BREAKDOWNS);
-  return { breakdowns, portalEnabled: input?.portalEnabled !== false, minPatternSize: patternMinimum(input?.minPatternSize), placeholders: placeholderList(input?.placeholders), alerts: sanitizeAlerts(input?.alerts, organizations) };
+  return { breakdowns, portalEnabled: input?.portalEnabled === true, minPatternSize: patternMinimum(input?.minPatternSize), placeholders: placeholderList(input?.placeholders), alerts: sanitizeAlerts(input?.alerts, organizations) };
 }
 
 const quote = (v) => `"${String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
