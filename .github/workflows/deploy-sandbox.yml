@@ -1,4 +1,4 @@
-name: Deploy Customer Insights to Sandbox
+name: Deploy Customer Insights to the Nuvriqo test site
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ jobs:
     env:
       FORGE_EMAIL: ${{ secrets.FORGE_EMAIL }}
       FORGE_API_TOKEN: ${{ secrets.FORGE_API_TOKEN }}
-      DEPLOY_SITE: retailinmotion-sandbox1.atlassian.net
+      DEPLOY_SITE: nuvriqo.atlassian.net
       DEPLOY_PRODUCT: jira
       DEPLOY_ENVIRONMENT: development
     steps:
