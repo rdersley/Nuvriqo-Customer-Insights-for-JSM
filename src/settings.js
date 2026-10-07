@@ -9,10 +9,10 @@ export const MIN_PATTERN = { min: 2, max: 10, default: 3 };
 export const DEFAULT_PLACEHOLDERS = ['Unknown', 'Please update', 'Please select', 'N/A', 'None', 'Not set', 'TBC', 'TBD', '-'];
 export const MAX_PLACEHOLDERS = 30;
 // Words that mean the same thing in tickets, so they group together. The first
-// word of each line is the one shown. Crew and customers often name a device
-// by its make ("bluepad") in one ticket and its type ("pinpad") in the next.
+// word of each line is the one shown. People often name a device by its make
+// or model in one ticket and its type in the next; admins add their own.
 export const DEFAULT_SYNONYMS = [
-  ['pinpad', 'pin pad', 'bluepad', 'blue pad', 'card reader', 'card terminal', 'payment terminal', 'payment device'],
+  ['pinpad', 'pin pad', 'card reader', 'card terminal', 'payment terminal', 'payment device'],
   ['sync', 'synchronisation', 'synchronization', 'synchronise', 'synchronize', 'synchronising', 'synchronizing'],
   ['login', 'log in', 'logon', 'log on', 'sign in', 'signin'],
 ];
