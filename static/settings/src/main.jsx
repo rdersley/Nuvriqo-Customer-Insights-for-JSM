@@ -109,7 +109,7 @@ function App() {
             onChange={(e) => { setSaved(false); setDraft((d) => ({ ...d, minPatternSize: Number(e.target.value) })); }} />
         </Field>
         <Field label="Words that mean the same" htmlFor="cs-synonyms"
-          help={`One list per line, for example “pinpad = bluepad, pin pad, card reader”. Tickets using any of them group together under the first word. Up to ${SYNONYM_LIMITS.groups} lines; capital letters, hyphens and plurals don’t matter.`}>
+          help={`One list per line, for example “pinpad = pin pad, card reader, payment terminal”. Tickets using any of them group together under the first word. Up to ${SYNONYM_LIMITS.groups} lines; capital letters, hyphens and plurals don’t matter.`}>
           <textarea id="cs-synonyms" className="nq-textarea" rows={5}
             value={synonymText(draft.synonyms ?? DEFAULT_SYNONYMS)}
             onChange={(e) => { setSaved(false); setDraft((d) => ({ ...d, synonyms: e.target.value })); }} />
