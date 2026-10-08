@@ -281,6 +281,52 @@ function App() {
     .filter(Boolean)
     .join(' · ');
 
+  const [pdfBusy, setPdfBusy] = useState(false);
+  // The PDF module (jsPDF) loads only when someone asks for a PDF.
+  async function exportPdf() {
+    if (!report) return;
+    setPdfBusy(true);
+    try {
+      const { downloadReportPdf } = await import('../../../src/pdfReport.js');
+      const date = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
+      const approx = (g) => (g.estimated ? '≈' : '');
+      const changeOf = (g) => (!g.previousCount ? { kind: 'new', text: 'New' } : g.change > 0 ? { kind: 'up', text: `↑ ${g.change}` } : g.change < 0 ? { kind: 'down', text: `↓ ${Math.abs(g.change)}` } : { kind: 'new', text: '→ 0' });
+      const name = report.organizations?.length > 1 ? `${report.organizations.length} organisations` : report.organization;
+      downloadReportPdf({
+        title: name,
+        subtitle: `${date(report.startDate)} – ${date(report.endDate)}${report.organizations?.length > 1 ? ` · ${report.organization}` : ''}`,
+        generatedAt: new Date(),
+        kpis: [
+          { label: 'Tickets in period', value: report.currentCount.toLocaleString(), hint: `previous period ${report.previousCount.toLocaleString()}` },
+          { label: 'Vs previous period', value: totalChange, hint: `${signed(report.change)} tickets` },
+          { label: 'Recurring issues', value: String(groups.length), hint: `with at least ${report.minPatternSize || 2} related tickets` },
+          ...(report.resolution ? [{ label: 'Median time to resolve', value: duration(report.resolution.medianHours), hint: report.resolution.openShare ? `${report.resolution.openShare}% still open` : 'all resolved' }] : []),
+        ],
+        chart: { title: 'Tickets over time', points: report.timeSeries },
+        summary: ai?.overview ? { heading: 'AI summary', text: ai.overview, note: 'Written by Atlassian-hosted AI from ticket summaries. Review before sharing.' } : null,
+        actions: ai?.actions || [],
+        issues: groups.slice(0, 15).map((g, index) => {
+          const peak = peakWindow(g.hours);
+          return {
+            title: patternName(g, index),
+            summary: aiPattern(index)?.summary || g.sampleSummary,
+            count: `${approx(g)}${g.count}`,
+            change: changeOf(g),
+            trend: patternTrend(g, report),
+            when: [trendWord(patternTrend(g, report)), peak && `mostly ${windowText(peak)} (${peak.share}%)`, whereOf(g)].filter(Boolean).join(' · '),
+            resolution: resolutionText(groupResolution(g)),
+            examples: g.tickets.slice(0, 3).map((t) => ({ key: t.key, summary: t.summary, status: t.status })),
+          };
+        }),
+        breakdowns: (report.breakdowns || []).map((b) => ({ label: b.label, values: b.values.map((v) => ({ value: v.value, count: v.count, countText: `${b.estimated ? '≈' : ''}${v.count.toLocaleString()}` })) })),
+        timeOfDay: report.timeOfDay || null,
+        footnote: `Tickets shared with ${report.organization}, as visible to the agent who exported this report. Issues are grouped from ticket wording and are clues for review, not confirmed root causes.${report.sampled ? ' Counts marked ~ are estimated from an even sample; totals and the chart are exact.' : ''}`,
+      }, `customer-insights-${String(name).toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${report.startDate}-${report.endDate}.pdf`);
+    } catch (e) {
+      setError(`The PDF couldn’t be created: ${e.message || e}`);
+    } finally { setPdfBusy(false); }
+  }
+
   function exportCsv() {
     if (!report) return;
     const rows = [['Customer', report.organization], ['Period', `${report.startDate} to ${report.endDate}`]];
@@ -332,7 +378,10 @@ function App() {
       product={PRODUCT}
       subtitle="See recurring issues and what’s changing across a customer’s tickets."
       version={version}
-      actions={report && <Button onClick={exportCsv}>Export CSV</Button>}
+      actions={report && <>
+        <Button onClick={exportPdf} disabled={pdfBusy}>{pdfBusy ? 'Creating PDF…' : 'Download PDF'}</Button>
+        <Button onClick={exportCsv}>Export CSV</Button>
+      </>}
     />
 
     {!licensed && <Notice kind="warning" title="Customer Insights isn’t licensed on this site">
