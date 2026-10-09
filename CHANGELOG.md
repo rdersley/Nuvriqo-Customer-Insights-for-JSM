@@ -2,6 +2,7 @@
 
 ## 1.5.0 (2026-10-09)
 
+- **AI categories:** "Summarise with AI" now also sorts the issues into a few broad categories (for example the point-of-sale app, payment devices, stock and products) with totals and change, and each category opens to its patterns. Switch between By category and All patterns. Categories are in the PDF and CSV, and the AI overview leads with them.
 - **Words that mean the same:** tickets that call the same thing by different names now group together, for example "Card reader connection" and "Pinpad connection", or "sync" and "synchronisation". Admins edit the lists in settings (Patterns); the first word of each list names the pattern. Defaults cover payment devices (pinpad, pin pad, card reader…), sync and log in. The AI merge and live report refreshes are given the same lists.
 
 ## 1.4.0 (2026-10-09)
