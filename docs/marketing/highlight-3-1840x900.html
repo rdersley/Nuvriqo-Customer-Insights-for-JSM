@@ -1,0 +1,53 @@
+<!doctype html><html><head><meta charset="utf-8"><style>*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:"Segoe UI",system-ui,sans-serif;color:#172b4d;background:#f4f5f7}
+.top{background:#fff;border-bottom:1px solid #dfe1e6;padding:14px 28px;display:flex;align-items:center;gap:12px;font-weight:700;font-size:18px}
+.top em{margin-left:auto;font-style:normal;font-weight:400;color:#6b778c;font-size:15px}
+.wrap{padding:22px 28px;display:grid;gap:16px}
+.card{background:#fff;border:1px solid #dfe1e6;border-radius:10px;padding:18px 20px}
+.card h3{font-size:17px}.card .d{color:#6b778c;font-size:13px;margin-top:2px;margin-bottom:10px}
+.kpis{display:grid;grid-template-columns:repeat(5,1fr);gap:12px}
+.kpi{background:#fff;border:1px solid #dfe1e6;border-radius:10px;padding:14px 16px}
+.kpi small{display:block;font-size:11px;font-weight:700;letter-spacing:.7px;color:#6b778c;text-transform:uppercase}
+.kpi b{display:block;font-size:28px;margin-top:4px}.kpi i{font-style:normal;font-size:12px;color:#6b778c}
+.row{display:grid;grid-template-columns:1.1fr 1.4fr 150px 70px 80px 14px;gap:16px;align-items:center;padding:11px 6px;border-top:1px solid #ebecf0;font-size:14px}
+.row:first-of-type{border-top:0}.row.open{background:#f7f8f9}
+.row strong{font-size:14.5px}.row small{display:block;color:#6b778c;font-size:12px;margin-top:2px}
+.row .s{color:#6b778c;font-size:13px}.row b{text-align:right;font-size:15px}
+.loz{font-size:11.5px;font-weight:700;border-radius:4px;padding:3px 8px;text-align:center;white-space:nowrap}
+.up{background:#fff7d6;color:#7f5f01}.new{background:#f3f0ff;color:#5e4db2}.down{background:#dcfff1;color:#216e4e}
+.meter{height:7px;background:#ebecf0;border-radius:4px;overflow:hidden}.meter i{display:block;height:100%;background:#0c66e4}
+.meter.warn i{background:#e2b203}
+svg.sp path{fill:none;stroke:#0c66e4;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.detail{padding:6px 6px 14px}
+.detail .meta{display:flex;justify-content:space-between;color:#6b778c;font-size:13px;margin:4px 0 10px}
+.detail .meta a{color:#0c66e4;text-decoration:none;font-weight:600}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;color:#6b778c;font-size:11px;letter-spacing:.6px;text-transform:uppercase;padding:8px;border-bottom:2px solid #dfe1e6}
+td{padding:9px 8px;border-bottom:1px solid #ebecf0}td.k{color:#0c66e4;font-weight:600}
+.st{background:#ebecf0;border-radius:4px;padding:2px 7px;font-size:11px;font-weight:700;color:#44546f}
+.ai{background:#e9f2ff;border:1px solid #cce0ff;border-radius:10px;padding:16px 20px;font-size:14px;line-height:1.5}
+.ai b{color:#0c66e4}
+.vals li{list-style:none;display:grid;grid-template-columns:1fr 1fr 60px 60px;gap:10px;align-items:center;padding:8px 0;border-top:1px solid #ebecf0;font-size:13.5px}
+.vals li:first-child{border-top:0}.vals small{display:block;color:#6b778c;font-size:11.5px}.vals a{color:#0c66e4;font-weight:600}
+.vals b{text-align:right}
+.grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.alert{display:flex;justify-content:space-between;align-items:center;padding:11px 0;border-top:1px solid #ebecf0;font-size:14px}
+.alert:first-of-type{border-top:0}.alert small{display:block;color:#6b778c;font-size:12.5px;margin-top:2px}.alert small a{color:#0c66e4;font-weight:600}
+.btn{border:1px solid #c1c7d0;border-radius:4px;padding:5px 12px;font-size:13px;font-weight:600;background:#fff;margin-left:6px}
+.btn.s{border-color:transparent;color:#44546f}
+.chart{display:flex;align-items:flex-end;gap:10px;height:170px;border-bottom:1px solid #dfe1e6;padding-top:8px}
+.chart div{flex:1;background:#0c66e4;border-radius:4px 4px 0 0}
+.pill{display:inline-block;background:#ebecf0;border-radius:10px;padding:1px 8px;font-size:12px;font-weight:700;margin-left:6px;color:#44546f}
+</style></head><body style="width:1840px;height:900px;overflow:hidden"><div style="zoom:1.27;width:1448.8188976377953px;height:708.6614173228346px"><div class="top" style="background:#1d3b78;color:#fff;border:0"><span style="background:#e2483d;border-radius:6px;padding:4px 7px;font-size:13px">AA</span>Acme Airlines Support<em style="color:#c9d5ef">Service report</em></div>
+<div class="wrap"><div style="display:flex;justify-content:space-between;align-items:flex-end"><div><h2 style="font-size:24px">Acme Airlines</h2><span style="color:#6b778c">1 July 2026 – 30 September 2026</span></div><span style="color:#6b778c;font-size:14px">Updated 02/10/2026, 07:00 <span class="btn">Refresh</span></span></div>
+<div class="kpis" style="grid-template-columns:repeat(3,1fr)"><div class="kpi"><small>Requests</small><b>4,316</b><i>in this period</i></div><div class="kpi"><small>Vs previous period</small><b>+12%</b><i>previous period: 3,854</i></div><div class="kpi"><small>Typical time to resolve</small><b>8.2 h</b><i>5% still open</i></div></div>
+<div class="grid2" style="grid-template-columns:1fr 1.25fr">
+<div class="card"><h3>Requests over time</h3><div class="d">Per week</div><div class="chart"><div style="height:52%"></div><div style="height:58%"></div><div style="height:61%"></div><div style="height:55%"></div><div style="height:63%"></div><div style="height:70%"></div><div style="height:66%"></div><div style="height:74%"></div><div style="height:81%"></div><div style="height:78%"></div><div style="height:85%"></div><div style="height:92%"></div><div style="height:60%"></div></div>
+<div class="ai" style="margin-top:16px"><b>Summary</b> · Requests rose 12%, mostly POS freezes at the start of shifts. Pairing issues are steady and sync problems at DUB are new since August. <small style="color:#6b778c">Written 30 September 2026.</small></div></div>
+<div class="card"><h3>Most common issues</h3><div class="d">Open an issue to see how it’s trending and recent requests.</div>
+<div class="row" style="grid-template-columns:1fr 150px 70px 80px 14px"><span><strong>POS terminal freezes at start of shift</strong><small>The POS freezes on the loading screen when a shift starts.</small></span><svg class="sp" width="150" height="30"><path d="M0,26 L25,24 L50,20 L75,21 L100,12 L125,8 L150,3"/></svg><b>≈412</b><span class="loz up">↑ 171</span><span>⌄</span></div>
+<div class="detail"><div class="meta"><span>Rising through the period · usually resolved in 7.4 h · 6% still open</span></div>
+<table><tr><th>Request</th><th>Summary</th><th>Status</th></tr><tr><td class="k">SUP-8851</td><td>Handheld frozen on loading screen at gate 4</td><td><span class="st">IN PROGRESS</span></td></tr><tr><td class="k">SUP-8820</td><td>POS stuck after login on early shift</td><td><span class="st">RESOLVED</span></td></tr></table></div>
+<div class="row" style="grid-template-columns:1fr 150px 70px 80px 14px"><span><strong>Card reader won’t pair</strong><small>Pin pads lose pairing after a restart.</small></span><svg class="sp" width="150" height="30"><path d="M0,15 L25,16 L50,14 L75,15 L100,14 L125,16 L150,15"/></svg><b>≈206</b><span class="loz down">↓ 18</span><span>›</span></div>
+<div class="row" style="grid-template-columns:1fr 150px 70px 80px 14px"><span><strong>Sales not syncing after flight</strong><small>Sales stay on the device after landing.</small></span><svg class="sp" width="150" height="30"><path d="M0,28 L25,28 L50,27 L75,22 L100,14 L125,9 L150,5"/></svg><b>≈131</b><span class="loz new">New</span><span>›</span></div>
+</div></div></div></div></body></html>
