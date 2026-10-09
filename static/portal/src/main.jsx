@@ -123,6 +123,42 @@ function Issue({ pattern }) {
   </li>;
 }
 
+/** The report as a PDF for the customer to keep or forward (jsPDF loads on demand). */
+async function downloadPdf(report) {
+  const { downloadReportPdf } = await import('../../../src/pdfReport.js');
+  const changeOf = (p) => (!p.previousCount ? { kind: 'new', text: 'New' } : p.count > p.previousCount ? { kind: 'up', text: `↑ ${p.count - p.previousCount}` } : p.count < p.previousCount ? { kind: 'down', text: `↓ ${p.previousCount - p.count}` } : { kind: 'new', text: 'Steady' });
+  const { totals } = report;
+  downloadReportPdf({
+    title: report.organization.name,
+    subtitle: `Service report · ${longDate(report.period.from)} – ${longDate(report.period.to)}`,
+    generatedAt: new Date(),
+    kpis: [
+      { label: 'Requests', value: totals.current.toLocaleString(), hint: 'in this period' },
+      { label: 'Vs previous period', value: totals.changePercent === null ? '—' : `${signed(totals.changePercent)}%`, hint: `previous period: ${totals.previous.toLocaleString()}` },
+      ...(report.resolution ? [{ label: 'Typical time to resolve', value: duration(report.resolution.medianHours), hint: report.resolution.openShare ? `${report.resolution.openShare}% still open` : 'all resolved' }] : []),
+    ],
+    chart: { title: 'Requests over time', points: report.timeSeries || [] },
+    summary: report.overview ? { heading: 'Summary', text: report.overview, note: report.live ? `Written ${longDate(report.summaryWrittenAt.slice(0, 10))}. Numbers updated ${new Date(report.refreshedAt).toLocaleDateString()}.` : '' } : null,
+    actions: report.actions || [],
+    issues: report.patterns.map((p) => {
+      const peak = peakWindow(p.hours);
+      return {
+        title: p.title,
+        summary: p.summary,
+        count: `${p.estimated ? '≈' : ''}${p.count.toLocaleString()}`,
+        change: changeOf(p),
+        trend: p.trend,
+        when: [trendWord(p.trend), peak && `mostly ${windowText(peak)} (${peak.share}%)`].filter(Boolean).join(' · '),
+        resolution: resolutionText(p),
+        examples: (p.examples || []).slice(0, 3).map((e) => ({ key: e.key, summary: e.summary, status: e.status })),
+      };
+    }),
+    breakdowns: (report.breakdowns || []).map((b) => ({ label: b.label, values: b.values.map((v) => ({ value: v.value, count: v.count, countText: `${b.estimated ? '≈' : ''}${v.count.toLocaleString()}` })) })),
+    timeOfDay: report.timeOfDay || null,
+    footnote: 'Issues are grouped from the wording of your organisation’s requests. Counts marked ~ are estimates.',
+  }, `service-report-${report.organization.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${report.period.from}-${report.period.to}.pdf`);
+}
+
 function Report({ report, onRefresh, refreshNote }) {
   const { totals } = report;
   const waitUntil = report.nextRefreshAt && report.nextRefreshAt > Date.now() ? report.nextRefreshAt : null;
@@ -134,6 +170,7 @@ function Report({ report, onRefresh, refreshNote }) {
       </div>
       <div className="cp-updated">
         <span className="nq-muted">{report.live ? `Updated ${new Date(report.refreshedAt).toLocaleString()}` : `Published ${new Date(report.publishedAt).toLocaleDateString()}`}</span>
+        <Button small onClick={() => downloadPdf(report).catch(() => {})}>Download PDF</Button>
         {report.live && <Button small onClick={onRefresh} disabled={report.refreshing || Boolean(waitUntil)}
           title={waitUntil ? `Available again at ${time(waitUntil)}` : undefined}>
           {report.refreshing ? 'Updating…' : 'Refresh'}
