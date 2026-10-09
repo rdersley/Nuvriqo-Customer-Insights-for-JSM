@@ -110,6 +110,28 @@ export function buildReportPdf(model) {
     }
   }
 
+  // Categories: broad areas (AI), each with its biggest patterns.
+  if (model.categories?.length) {
+    heading('Issue categories');
+    for (const c of model.categories) {
+      const detail = lines(c.patterns || '', W - 150, 8);
+      ensure(24 + detail.length * 10);
+      doc.setDrawColor(...C.border); doc.line(PAGE.m, y, PAGE.m + W, y);
+      y += 6;
+      set(10.5, 'bold'); doc.text(lines(c.title, W - 150, 10.5)[0] || '', PAGE.m, y + 11);
+      set(8, 'normal', C.subtle); doc.text(pdfText(c.share || ''), PAGE.m + W - 100, y + 11, { align: 'right' });
+      set(11, 'bold'); doc.text(pdfText(String(c.count)), PAGE.m + W - 50, y + 11, { align: 'right' });
+      if (c.change) {
+        const [bg, fg] = c.change.kind === 'up' ? [C.upBg, C.up] : c.change.kind === 'down' ? [C.downBg, C.down] : [C.newBg, C.newText];
+        doc.setFillColor(...bg); doc.roundedRect(PAGE.m + W - 42, y + 2, 40, 13, 3, 3, 'F');
+        set(7.5, 'bold', fg); doc.text(pdfText(c.change.text), PAGE.m + W - 22, y + 11, { align: 'center' });
+      }
+      y += 16;
+      for (const l of detail) { set(8, 'normal', C.subtle); doc.text(l, PAGE.m, y + 8); y += 10; }
+      y += 4;
+    }
+  }
+
   // Issues.
   if (model.issues?.length) {
     heading(`Recurring issues (${model.issues.length})`);
