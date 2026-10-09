@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.4.0 (2026-10-09)
+
+- **Download PDF:** a branded A4 report from the agent page, and from the customer portal's service report.
+- **Create problem:** turn a recurring issue into a Jira problem (created as the agent), with the facts and optionally links to up to 20 example tickets.
+- **Portal: when requests arrive:** busiest hours, busiest day and a heatmap on portal reports, in the publishing agent's time zone. Reports published earlier show UTC until they're replaced.
+- **Backup & restore:** Jira admins can download every record the app keeps and restore it, for example when moving to another installation.
+
 ## 1.3.0 (2026-10-02)
 
 - **Several organisations at once:** analyse up to 10 organisations together. A By Organisation breakdown is added automatically, with drill-down and Open in Jira, and each issue shows its split by organisation. Portal reports stay one organisation each.
