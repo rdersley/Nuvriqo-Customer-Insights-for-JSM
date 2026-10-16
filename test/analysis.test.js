@@ -291,13 +291,6 @@ test('trend words compare tickets per day in each half of the period', async () 
   assert.equal(duration(null), '–');
 });
 
-test('PDF text is limited to what the built-in fonts can draw', async () => {
-  const { pdfText } = await import('../src/pdfReport.js');
-  assert.equal(pdfText('≈412 ↑ 17 → done'), '~412 + 17 -> done');
-  assert.equal(pdfText('résumé – “café” · 50%'), 'résumé – “café” · 50%');
-  assert.equal(pdfText('Łódź 中文 🚀'), 'Lódz ?? ?');
-});
-
 test('same-meaning words group together under the first word', () => {
   const synonyms = [['pinpad', 'pin pad', 'bluepad', 'card reader'], ['sync', 'synchronization']];
   const issues = [

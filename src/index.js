@@ -1,16 +1,28 @@
 import ResolverModule from '@forge/resolver';
 import { asUser, route } from '@forge/api';
 import { textOf } from './analysis.js';
-import { filterFor, organisationsOf, parseQuery, pool, readJson, runAnalysis, searchPage } from './engine.js';
+import { countIssues, dateSlices, deviceFieldIds, filterFor, organisationsOf, parseQuery, pool, readJson, requestWithRetry, runAnalysis, searchPage } from './engine.js';
+import { agentRows, handlingTimes, satisfactionFieldId, teamTotals } from './agents.js';
+import { chartBuckets } from './analysis.js';
+import { AGE_BANDS, backlogAges, flowSummary, forecast, pastWeeks } from './flow.js';
 import { licenseAllows, UNLICENSED_MESSAGE } from './license.js';
 import { exportBackupPage, importBackupBatch } from './backup.js';
 import { suggestCategories, suggestMerges, summarise } from './ai.js';
 import { snapshotFrom } from './publish.js';
-import { deleteLive, deleteReport, listAlerts, loadAlert, loadLiveConfig, loadLiveState, loadReport, loadSettings, saveAlert, saveLiveConfig, saveReport, saveSettings } from './storage.js';
+import { deleteLive, deleteReport, listAlerts, listOrgLogos, loadAlert, loadLiveConfig, loadLiveState, loadLogo, loadReport, loadSettings, saveAlert, saveLiveConfig, saveLogo, saveReport, saveSettings } from './storage.js';
+import { MAX_ORG_LOGOS, sanitizeLogo } from './logos.js';
+import { fleetFor } from './devices.js';
 import { isLive, liveConfigFrom } from './live.js';
-import { queueAlertCheck, queueRefresh } from './liveJobs.js';
-import { organisationBreakdown, sanitizeSettings, selectableFields } from './settings.js';
+import { queueAlertCheck, queueEmail, queueRefresh } from './liveJobs.js';
+import { allClientFields, analysisConfig, autoInternalBreakdowns, organisationBreakdown, sanitizeSettings, selectableFields } from './settings.js';
 import { problemFields, problemRequest, relatesLinkType } from './problem.js';
+import { slaFieldChoices, slaState } from './sla.js';
+import { deviceIdChoices, deviceOf } from './devices.js';
+import { escalationOf, escalationSummary, levelOf } from './escalation.js';
+import { channelOf } from './channels.js';
+import { emailList, MAX_SCHEDULES, sanitizeEmailConfig, sanitizeSchedule } from './email.js';
+import { loadEmailConfig, loadEmailLog, loadEmailSecret, loadSchedules, loadScheduleState, saveEmailConfig, saveEmailSecret, saveSchedules } from './storage.js';
+import { searchWords } from './surge.js';
 
 // This package is "type": "module"; Forge's bundler then hands CommonJS packages
 // over as their exports object, so the class sits on `.default`.
@@ -57,8 +69,8 @@ const ALERTS_SHOWN = 20;
 
 define('getAlerts', async ({ context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
-  const { alerts: config } = await loadSettings();
-  if (!config?.enabled) return { enabled: false, alerts: [] };
+  const { alerts: config, surge } = await loadSettings();
+  if (!config?.enabled && !surge?.enabled) return { enabled: false, alerts: [] };
   const [visible, alerts] = await Promise.all([listOrganizations(), listAlerts()]);
   const ids = new Set(visible.map((o) => o.id));
   return { enabled: true, alerts: alerts.filter((a) => !a.dismissedAt && ids.has(a.organization.id)).slice(0, ALERTS_SHOWN) };
@@ -95,10 +107,16 @@ const DESCRIPTION_CHARS = 600;
 
 /**
  * The admin's breakdown fields, plus "Organisation" when an analysis covers
- * several organisations (limited to those selected).
+ * several organisations (limited to those selected), or Project and Client
+ * for an internal analysis.
  */
-async function breakdownsFor(payload) {
-  const { breakdowns } = await loadSettings();
+async function breakdownsFor(payload, settings = null) {
+  const s = settings || await loadSettings();
+  const { breakdowns } = s;
+  if (payload?.scope === 'internal') {
+    const config = analysisConfig(s, payload);
+    return [...autoInternalBreakdowns(payload, config.clientFields), ...config.breakdowns];
+  }
   const organisations = organisationsOf(payload);
   if (organisations.length < 2) return breakdowns;
   const response = await asUser().requestJira(route`/rest/api/3/field`, { headers: { Accept: 'application/json' } });
@@ -108,8 +126,11 @@ async function breakdownsFor(payload) {
 
 define('fetchTickets', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
-  const breakdowns = await breakdownsFor(payload);
-  const query = parseQuery(payload, filterFor(payload?.filter, breakdowns));
+  const settings = await loadSettings();
+  const breakdowns = await breakdownsFor(payload, settings);
+  const { slaFields } = analysisConfig(settings, payload);
+  // Clients are matched in every client field, whichever settings apply.
+  const query = parseQuery(payload, filterFor(payload?.filter, breakdowns), { clientFields: allClientFields(settings) });
   const { from, toExclusive } = payload;
   if (!ISO_DATE.test(from || '') || !ISO_DATE.test(toExclusive || '') || from < query.previousStart || toExclusive > query.endExclusive || from >= toExclusive) {
     throw new Error('Invalid ticket range.');
@@ -118,7 +139,7 @@ define('fetchTickets', async ({ payload, context }) => {
   const tickets = [];
   let token = typeof payload.nextPageToken === 'string' ? payload.nextPageToken : undefined;
   for (let page = 0; page < FULL_PAGES_PER_CALL; page += 1) {
-    const result = await searchPage(query.between(from, toExclusive), 100, token, breakdowns);
+    const result = await searchPage(query.between(from, toExclusive), 100, token, [...breakdowns, ...slaFields.map((f) => ({ id: f.id, kind: null })), ...deviceFieldIds(settings.devices).map((id) => ({ id, kind: null })), ...(settings.channelField ? [{ id: settings.channelField.id, kind: null }] : [])]);
     for (const issue of result.issues) {
       tickets.push({
         key: issue.key,
@@ -129,7 +150,14 @@ define('fetchTickets', async ({ payload, context }) => {
           description: textOf(issue.fields?.description).join(' ').slice(0, DESCRIPTION_CHARS),
           created: issue.fields?.created,
           resolutiondate: issue.fields?.resolutiondate || null,
+          timespent: issue.fields?.timespent ?? null,
           status: { name: issue.fields?.status?.name || 'Unknown' },
+          // SLAs reduced to 'met' / 'breached' (or null) to keep the payload small.
+          ...Object.fromEntries(slaFields.map((f) => [f.id, slaState(issue.fields?.[f.id])])),
+          // The device (IDs and type) reduced the same way.
+          ...(settings.devices?.idFieldId ? { __device: deviceOf(issue, settings.devices) } : {}),
+          // The contact channel, reduced to its value.
+          ...(settings.channelField ? { __channel: channelOf(issue, settings.channelField) } : {}),
         },
       });
     }
@@ -141,11 +169,359 @@ define('fetchTickets', async ({ payload, context }) => {
 
 define('analyze', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
-  const { minPatternSize, placeholders, synonyms } = await loadSettings();
-  const breakdowns = await breakdownsFor(payload);
-  const query = parseQuery(payload, filterFor(payload?.filter, breakdowns));
+  const settings = await loadSettings();
+  // Customer settings, or the internal settings for these projects.
+  const config = analysisConfig(settings, payload);
+  const { minPatternSize, placeholders, synonyms } = config.patterns;
+  const breakdowns = await breakdownsFor(payload, settings);
+  const query = parseQuery(payload, filterFor(payload?.filter, breakdowns), { clientFields: allClientFields(settings) });
   // Resolvers are killed at 25s; runAnalysis stops starting new fetches after the budget.
-  return runAnalysis(query, { breakdowns, minPatternSize, placeholders, synonyms, mode: 'user', budgetMs: FETCH_BUDGET_MS });
+  const report = await runAnalysis(query, { breakdowns, minPatternSize, placeholders, synonyms, slaFields: config.slaFields, devices: settings.devices, channelField: settings.channelField || null, mode: 'user', budgetMs: FETCH_BUDGET_MS });
+  // Fleet sizes for the analysed organisations (settings → Devices), for the share of devices affected.
+  const deviceFleet = settings.devices?.idFieldId ? fleetFor(settings.devices, query.organizations.map((o) => o.id)) : null;
+  return { ...report, deviceFleet, settingsUsed: payload?.scope === 'internal' ? { profile: config.profile, mixed: Boolean(config.mixed) } : null };
+});
+
+// Flow and workload planning (src/flow.js), separate from analyze so it gets its
+// own time limit: created against resolved per chart bucket, the open backlog
+// by age, and 12 weeks of history for the forecast. Counts only.
+const FLOW_BUDGET_MS = 20000;
+define('analyzeFlow', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  const settings = await loadSettings();
+  const breakdowns = await breakdownsFor(payload, settings);
+  const query = parseQuery(payload, filterFor(payload?.filter, breakdowns), { clientFields: allClientFields(settings) });
+  const deadline = Date.now() + FLOW_BUDGET_MS;
+  const count = (jql) => (Date.now() > deadline ? Promise.resolve(null) : countIssues(jql, 'user'));
+  const scope = query.scopeJql;
+  const buckets = chartBuckets(query.startDate, query.endDate);
+  const weeks = pastWeeks();
+  const [created, resolved, weekly, open, ...within] = await Promise.all([
+    pool(buckets.map((b) => () => count(query.between(b.from, b.toExclusive))), 6),
+    pool(buckets.map((b) => () => count(`${scope} AND resolved >= "${b.from}" AND resolved < "${b.toExclusive}"`)), 6),
+    pool(weeks.map((w) => () => count(`${scope} AND created >= "${w.from}" AND created < "${w.toExclusive}"`)), 6),
+    count(`${scope} AND statusCategory != Done`),
+    ...AGE_BANDS.map((days) => count(`${scope} AND statusCategory != Done AND created >= "-${days}d"`)),
+  ]);
+  const complete = ![...created, ...resolved, ...weekly, open, ...within].includes(null);
+  console.log(`analyzeFlow: ${query.internal ? 'internal' : 'customer'}, ${buckets.length} buckets, open ${open ?? '?'}${complete ? '' : ', incomplete (time limit)'}`);
+  const nextMonday = new Date(Date.parse(`${weeks[weeks.length - 1].toExclusive}T00:00:00Z`) + 7 * 86400000).toISOString().slice(0, 10);
+  return {
+    complete,
+    flow: flowSummary(buckets.map((b, i) => ({ date: b.date, count: created[i] ?? 0 })), resolved.map((r) => r ?? 0)),
+    backlog: open === null ? null : { open, ages: backlogAges(open, within.map((w) => w ?? 0)) },
+    weekly: weeks.map((w, i) => ({ from: w.from, count: weekly[i] ?? 0 })),
+    // Forecast from the week after this one (this week is still under way).
+    forecast: complete ? forecast(weekly, undefined, nextMonday) : null,
+  };
+});
+
+// Knowledge gaps: for the top recurring issues, search the JSM knowledge base
+// (as the agent) and return any matching articles. An issue with none is a gap.
+const MAX_GAP_TOPICS = 15;
+define('knowledgeGaps', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  const topics = (Array.isArray(payload?.topics) ? payload.topics : []).slice(0, MAX_GAP_TOPICS)
+    .map((t) => ({ key: String(t?.key ?? '').slice(0, 200), title: String(t?.title ?? '').slice(0, 120) }))
+    .filter((t) => t.key && t.title);
+  let site = '';
+  try { site = String((await readJson(await asUser().requestJira(route`/rest/api/3/serverInfo`, { headers: { Accept: 'application/json' } }), 'Server info')).baseUrl || '').replace(/\/$/, ''); } catch { /* links left out */ }
+  let failure = null;
+  const results = await pool(topics.map((t) => async () => {
+    const words = searchWords(t.title);
+    if (!words || failure) return { key: t.key, query: words, articles: [] };
+    const response = await asUser().requestJira(route`/rest/servicedeskapi/knowledgebase/article?query=${words}&highlight=false&limit=3`, {
+      headers: { Accept: 'application/json', 'X-ExperimentalApi': 'opt-in' },
+    });
+    if (!response.ok) {
+      if ([401, 403, 404].includes(response.status)) failure = `The knowledge base couldn’t be searched (${response.status}). Check the service project has a linked knowledge base and you can view it.`;
+      return { key: t.key, query: words, articles: [], error: true };
+    }
+    const data = await response.json();
+    return {
+      key: t.key,
+      query: words,
+      articles: (data.values || []).slice(0, 3).map((a) => ({
+        title: String(a.title || '').slice(0, 200),
+        url: a.source?.pageId && a.source?.spaceKey && site ? `${site}/wiki/spaces/${encodeURIComponent(a.source.spaceKey)}/pages/${encodeURIComponent(a.source.pageId)}` : '',
+      })).filter((a) => a.title),
+    };
+  }), 4);
+  console.log(`knowledgeGaps: ${topics.length} issues, ${results.filter((r) => !r.articles.length && !r.error).length} without an article${failure ? ', search failed' : ''}`);
+  if (failure && results.every((r) => r.error || !r.articles.length)) throw new Error(failure);
+  return { results };
+});
+
+// Team performance (src/agents.js): tickets resolved in the period and open
+// now, per assignee. Per-agent rows only for Jira admins; everyone else gets
+// the team totals. Nothing is stored. Large periods are sampled evenly and
+// resolved counts scaled.
+const AGENT_SAMPLE = 2000;
+const AGENT_OPEN = 1000;
+const AGENT_BUDGET_MS = 15000; // reading tickets; histories (AHT) get until 22s
+define('agentPerformance', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  // Agent figures belong to internal analyses, never customer reports.
+  if (payload?.scope !== 'internal') throw new Error('Team performance is only available on the Internal tab.');
+  const settings = await loadSettings();
+  const config = analysisConfig(settings, payload);
+  const breakdowns = await breakdownsFor(payload, settings);
+  const query = parseQuery(payload, filterFor(payload?.filter, breakdowns), { clientFields: allClientFields(settings) });
+  const deadline = Date.now() + AGENT_BUDGET_MS;
+  const [admin, fieldList] = await Promise.all([
+    isJiraAdmin(),
+    asUser().requestJira(route`/rest/api/3/field`, { headers: { Accept: 'application/json' } }).then((r) => readJson(r, 'Field list')),
+  ]);
+  const satisfactionId = satisfactionFieldId(fieldList);
+  const fields = ['assignee', 'issuetype', 'priority', ...config.slaFields.map((f) => f.id), ...(satisfactionId ? [satisfactionId] : [])].map((id) => ({ id, kind: null }));
+  const resolvedJql = (from, toExclusive) => `${query.scopeJql} AND resolved >= "${from}" AND resolved < "${toExclusive}"`;
+  const openJql = `${query.scopeJql} AND statusCategory != Done`;
+  const [total, openTotal] = await Promise.all([countIssues(resolvedJql(query.startDate, query.endExclusive), 'user'), countIssues(openJql, 'user')]);
+  // Fetch every resolved ticket, or an even sample across the period.
+  const slices = dateSlices(query.startDate, query.endExclusive, 10);
+  const perSlice = total <= AGENT_SAMPLE ? Infinity : Math.ceil(AGENT_SAMPLE / slices.length);
+  let cutShort = false;
+  const fetchAll = async (jql, max) => {
+    const issues = [];
+    let token;
+    do {
+      if (Date.now() > deadline) { cutShort = true; break; }
+      const page = await searchPage(jql, 100, token, fields, 'user');
+      issues.push(...page.issues);
+      token = page.nextPageToken;
+    } while (token && issues.length < max);
+    return issues.slice(0, max);
+  };
+  const [resolvedSlices, open] = await Promise.all([
+    pool(slices.map(([a, b]) => () => fetchAll(resolvedJql(a, b), perSlice)), 4),
+    fetchAll(openJql, AGENT_OPEN),
+  ]);
+  const resolved = resolvedSlices.flat();
+  const scale = resolved.length && total > resolved.length ? total / resolved.length : 1;
+  const { handling, names, handlingComplete, stats } = await handlingFor(resolved, settings.handlingStatuses || [], deadline + 7000);
+  // Which statuses these tickets passed through (most common first), so an admin can check the handling statuses.
+  const statusesSeen = stats ? Object.entries(stats.seen).sort((a, b) => b[1] - a[1]).slice(0, 15).map(([name, tickets]) => ({ name, tickets })) : [];
+  const options = { slaFields: config.slaFields, satisfactionId, handling, names };
+  const scaleRow = (row) => (scale > 1 ? { ...row, resolved: Math.round(row.resolved * scale), loggedHours: Math.round(row.loggedHours * scale * 10) / 10, handlingHours: Math.round(row.handlingHours * scale * 10) / 10 } : row);
+  console.log(`agentPerformance: ${total} resolved (${resolved.length} read), ${openTotal} open (${open.length} read), handling ${handling ? `${handlingComplete ? 'complete' : 'partial'} (${stats.handled}/${Object.keys(handling).length} tickets with handling time, ${stats.unassigned} partly unassigned; statuses: ${statusesSeen.slice(0, 8).map((s) => `${s.name} ${s.tickets}`).join(', ')})` : 'skipped'}${admin ? ', per agent' : ', team only'}${cutShort ? ', cut short' : ''}`);
+  return {
+    resolvedTotal: total,
+    openTotal,
+    estimated: scale > 1 || open.length < openTotal,
+    cutShort,
+    // AHT from ticket histories; partial when they couldn't all be read in time.
+    handling: handling ? { complete: handlingComplete, statuses: settings.handlingStatuses?.length ? settings.handlingStatuses : null, tickets: Object.keys(handling).length, handled: stats.handled, unassigned: stats.unassigned, statusesSeen } : null,
+    slaFields: config.slaFields.map(({ id, name }) => ({ id, name })),
+    satisfaction: Boolean(satisfactionId),
+    team: { ...scaleRow(teamTotals(resolved, open, options)), resolved: total, open: openTotal },
+    // Per-agent figures are for Jira admins only.
+    agents: admin ? agentRows(resolved, open, options).map(scaleRow) : null,
+  };
+});
+
+/**
+ * Handling time per resolved ticket and assignee, from status and assignee
+ * history (POST /rest/api/3/changelog/bulkfetch, up to 1,000 tickets a call)
+ * and the site's statuses. Stops at `deadline`; `handlingComplete` says
+ * whether every ticket's history was read.
+ */
+async function handlingFor(resolved, handlingStatuses, deadline) {
+  if (!resolved.length || Date.now() > deadline - 4000) return { handling: null, names: {}, handlingComplete: false };
+  const statuses = await readJson(await asUser().requestJira(route`/rest/api/3/status`, { headers: { Accept: 'application/json' } }), 'Statuses');
+  const statusById = new Map((Array.isArray(statuses) ? statuses : []).map((s) => [String(s.id), { name: s.name, category: s.statusCategory?.key }]));
+  const histories = new Map();
+  const names = {};
+  const stats = { seen: {}, handled: 0, unassigned: 0 };
+  let complete = true;
+  for (let i = 0; i < resolved.length; i += 1000) {
+    const ids = resolved.slice(i, i + 1000).map((issue) => String(issue.id)).filter(Boolean);
+    let token;
+    do {
+      if (Date.now() > deadline) { complete = false; break; }
+      const response = await requestWithRetry(() => asUser().requestJira(route`/rest/api/3/changelog/bulkfetch`, {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ issueIdsOrKeys: ids, fieldIds: ['status', 'assignee'], maxResults: 1000, ...(token ? { nextPageToken: token } : {}) }),
+      }));
+      const page = await readJson(response, 'Ticket history');
+      // The response's shape, once, for checking AHT (types and counts only).
+      if (!histories.size) { const h = page.issueChangeLogs?.[0]?.changeHistories?.[0]; console.log(`agentPerformance: history shape: ${page.issueChangeLogs?.length ?? 0} tickets, created ${typeof h?.created} ${String(h?.created ?? '').slice(0, 25)}, item keys ${Object.keys(h?.items?.[0] || {}).join('/')}`); }
+      for (const log of page.issueChangeLogs || []) {
+        const list = histories.get(String(log.issueId)) || [];
+        list.push(...(log.changeHistories || []));
+        histories.set(String(log.issueId), list);
+        for (const h of log.changeHistories || []) {
+          for (const item of h.items || []) {
+            if ((item.fieldId || item.field) !== 'assignee') continue;
+            if (item.from && item.fromString) names[item.from] = item.fromString;
+            if (h.author?.accountId && h.author.displayName) names[h.author.accountId] = h.author.displayName;
+            if (item.to && item.toString) names[item.to] = item.toString;
+          }
+        }
+      }
+      token = page.nextPageToken;
+    } while (token);
+    if (!complete) break;
+  }
+  const handling = {};
+  for (const issue of resolved) {
+    if (!histories.has(String(issue.id)) && !complete) continue;
+    handling[issue.id] = handlingTimes(issue, histories.get(String(issue.id)) || [], statusById, handlingStatuses, Date.now(), stats);
+  }
+  return { handling, names, handlingComplete: complete, stats };
+}
+
+// Escalation levels (src/escalation.js): for tickets created in the period, the
+// highest support level reached and the time to reach 2nd and 3rd level, from
+// status history. Internal analyses whose project settings switch it on only.
+const ESCALATION_SAMPLE = 2000;
+define('escalation', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  if (payload?.scope !== 'internal') throw new Error('Escalation levels are only available on the Internal tab.');
+  const settings = await loadSettings();
+  const config = analysisConfig(settings, payload);
+  if (!config.escalation) return null;
+  const breakdowns = await breakdownsFor(payload, settings);
+  const query = parseQuery(payload, filterFor(payload?.filter, breakdowns), { clientFields: allClientFields(settings) });
+  const deadline = Date.now() + 22000;
+  const createdJql = (from, toExclusive) => query.between(from, toExclusive);
+  const total = await countIssues(createdJql(query.startDate, query.endExclusive), 'user');
+  const slices = dateSlices(query.startDate, query.endExclusive, 10);
+  const perSlice = total <= ESCALATION_SAMPLE ? Infinity : Math.ceil(ESCALATION_SAMPLE / slices.length);
+  const sliceTickets = await pool(slices.map(([a, b]) => async () => {
+    const out = [];
+    let token;
+    do {
+      if (Date.now() > deadline - 8000) break;
+      const page = await searchPage(createdJql(a, b), 100, token, [], 'user');
+      out.push(...page.issues);
+      token = page.nextPageToken;
+    } while (token && out.length < perSlice);
+    return out.slice(0, perSlice);
+  }), 4);
+  const tickets = sliceTickets.flat();
+  const [statuses, { histories, complete }] = await Promise.all([
+    readJson(await asUser().requestJira(route`/rest/api/3/status`, { headers: { Accept: 'application/json' } }), 'Statuses'),
+    fetchHistories(tickets, ['status'], deadline),
+  ]);
+  const statusById = new Map((Array.isArray(statuses) ? statuses : []).map((s) => [String(s.id), { name: s.name }]));
+  const results = tickets.filter((t) => complete || histories.has(String(t.id)))
+    .map((t) => escalationOf(t, histories.get(String(t.id)) || [], statusById, config.escalation.levels));
+  // Which statuses count as which level (for the card), from the statuses these tickets used.
+  const used = new Set();
+  for (const list of histories.values()) for (const h of list) for (const item of h.items || []) if ((item.fieldId || item.field) === 'status') { used.add(String(item.from)); used.add(String(item.to)); }
+  const mapping = [1, 2, 3].map((level) => ({ level, statuses: [...used].map((id) => statusById.get(id)?.name).filter((name) => name && levelOf(name, config.escalation.levels) === level).sort() }));
+  const summary = escalationSummary(results);
+  console.log(`escalation: ${total} created (${tickets.length} read, ${results.length} with history), levels ${summary.byLevel.map((l) => `${l.level}:${l.tickets}`).join(' ')}${complete ? '' : ', partial'}`);
+  return { total, sampled: tickets.length < total, complete, ...summary, mapping, profile: config.profile };
+});
+
+/** Status (or other field) history for tickets, 1,000 a call, until `deadline`. */
+async function fetchHistories(issues, fieldIds, deadline) {
+  const histories = new Map();
+  let complete = true;
+  for (let i = 0; i < issues.length && complete; i += 1000) {
+    const ids = issues.slice(i, i + 1000).map((issue) => String(issue.id)).filter(Boolean);
+    let token;
+    do {
+      if (Date.now() > deadline) { complete = false; break; }
+      const page = await readJson(await requestWithRetry(() => asUser().requestJira(route`/rest/api/3/changelog/bulkfetch`, {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ issueIdsOrKeys: ids, fieldIds, maxResults: 1000, ...(token ? { nextPageToken: token } : {}) }),
+      })), 'Ticket history');
+      for (const log of page.issueChangeLogs || []) {
+        const list = histories.get(String(log.issueId)) || [];
+        list.push(...(log.changeHistories || []));
+        histories.set(String(log.issueId), list);
+      }
+      token = page.nextPageToken;
+    } while (token);
+  }
+  // The bulk API can repeat histories across pages.
+  for (const [id, list] of histories) histories.set(id, [...new Map(list.map((h, n) => [h.id ?? `i${n}`, h])).values()]);
+  return { histories, complete };
+}
+
+// ---- Email reports (src/email.js, emailJobs.js): Jira admins only -----------------
+
+async function requireEmailAdmin(context) {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  if (!(await isJiraAdmin())) throw new Error('Only Jira admins can manage email reports.');
+}
+
+define('getEmailSettings', async ({ context }) => {
+  await requireEmailAdmin(context);
+  const [config, secret, schedules, log] = await Promise.all([loadEmailConfig(), loadEmailSecret(), loadSchedules(), loadEmailLog()]);
+  const states = await Promise.all(schedules.map((s) => loadScheduleState(s.id)));
+  // The secret itself never leaves the server: only whether one is set.
+  return { config, secretSet: Boolean(secret), schedules: schedules.map((s, i) => ({ ...s, state: states[i] })), log };
+});
+
+// payload: { config: { tenantId, clientId, sender }, secret?: new client secret }
+define('saveEmailConfig', async ({ payload, context }) => {
+  await requireEmailAdmin(context);
+  const config = sanitizeEmailConfig(payload?.config);
+  await saveEmailConfig(config);
+  const secret = String(payload?.secret ?? '').trim();
+  if (secret) await saveEmailSecret(secret.slice(0, 500));
+  console.log(`saveEmailConfig: tenant ${config.tenantId ? 'set' : 'missing'}, client ${config.clientId ? 'set' : 'missing'}, sender ${config.sender ? 'set' : 'missing'}${secret ? ', secret replaced' : ''}`);
+  return { config, secretSet: Boolean(secret) || Boolean(await loadEmailSecret()) };
+});
+
+define('saveSchedule', async ({ payload, context }) => {
+  await requireEmailAdmin(context);
+  const schedule = sanitizeSchedule(payload?.schedule, await listOrganizations());
+  const schedules = await loadSchedules();
+  const rest = schedules.filter((s) => s.id !== schedule.id);
+  if (rest.length >= MAX_SCHEDULES) throw new Error(`Up to ${MAX_SCHEDULES} schedules.`);
+  await saveSchedules([...rest, schedule].sort((a, b) => a.name.localeCompare(b.name)));
+  console.log(`saveSchedule: ${schedule.frequency}, ${schedule.organizations.length} orgs, ${schedule.internal.length + schedule.customers.length} recipients`);
+  return { schedule };
+});
+
+define('deleteSchedule', async ({ payload, context }) => {
+  await requireEmailAdmin(context);
+  await saveSchedules((await loadSchedules()).filter((s) => s.id !== String(payload?.id ?? '')));
+  return { deleted: true };
+});
+
+// "Send now" to the schedule's recipients, or a test to one address only.
+define('sendScheduleNow', async ({ payload, context }) => {
+  await requireEmailAdmin(context);
+  const id = String(payload?.id ?? '');
+  if (!(await loadSchedules()).some((s) => s.id === id)) throw new Error('That schedule wasn’t found. Save it first.');
+  const [to] = payload?.testTo ? emailList(payload.testTo) : [];
+  if (payload?.testTo && !to) throw new Error('Enter a valid email address for the test.');
+  await queueEmail(id, { reason: to ? 'test' : 'manual', overrideTo: to || null });
+  return { queued: true };
+});
+
+// Internal analysis pickers: projects this user can see, and client values.
+define('getProjects', async ({ context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  const projects = [];
+  for (let start = 0; start < 500; start += 100) {
+    const page = await readJson(await asUser().requestJira(route`/rest/api/3/project/search?startAt=${start}&maxResults=100&orderBy=name`, { headers: { Accept: 'application/json' } }), 'Projects');
+    projects.push(...(page.values || []).map((p) => ({ key: String(p.key), name: String(p.name) })));
+    if (page.isLast || !page.values?.length) break;
+  }
+  return { projects, clientFields: allClientFields(await loadSettings()).map((f) => ({ id: f.id, name: f.name })) };
+});
+
+// Values for the client picker, from Jira's JQL autocomplete for each client field.
+define('suggestClients', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  const text = String(payload?.text ?? '').slice(0, 60);
+  const clientFields = allClientFields(await loadSettings());
+  const lists = await pool(clientFields.map((f) => async () => {
+    const n = /^customfield_(\d+)$/.exec(f.id)?.[1];
+    if (!n) return [];
+    const response = await asUser().requestJira(route`/rest/api/3/jql/autocompletedata/suggestions?fieldName=${`cf[${n}]`}&fieldValue=${text}`, { headers: { Accept: 'application/json' } });
+    if (!response.ok) return [];
+    return ((await response.json()).results || []).map((r) => String(r.value ?? '').replace(/^"|"$/g, '')).filter(Boolean);
+  }), 3);
+  return [...new Set(lists.flat())].sort((a, b) => a.localeCompare(b)).slice(0, 30);
 });
 
 // Opt-in, separate from analyze so it gets its own time limit. The report comes
@@ -191,6 +567,16 @@ async function visibleOrganisation(orgId) {
   const data = await readJson(response, 'Organization lookup');
   return { id: String(data.id), name: data.name };
 }
+
+// PDF logos: the company's, and the organisation's when the report covers one
+// this agent can see.
+define('getPdfLogos', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  const company = await loadLogo('company');
+  if (!payload?.orgId) return { company, customer: null };
+  const organization = await visibleOrganisation(payload.orgId);
+  return { company, customer: await loadLogo(organization.id) };
+});
 
 // Portal publishing follows each site's admin setting. (Not a Forge variable:
 // those apply to every site installed from an environment.)
@@ -261,8 +647,14 @@ async function isJiraAdmin() {
 }
 
 async function siteFields() {
+  return (await siteFieldLists()).selectable;
+}
+
+/** Fields an admin can break down by, and the site's JSM SLA fields. */
+async function siteFieldLists() {
   const response = await asUser().requestJira(route`/rest/api/3/field`, { headers: { Accept: 'application/json' } });
-  return selectableFields(await readJson(response, 'Field list'));
+  const all = await readJson(response, 'Field list');
+  return { selectable: selectableFields(all), slaChoices: slaFieldChoices(all), idChoices: deviceIdChoices(all) };
 }
 
 /** The id of the alert ticket's issue type, checked against the project. */
@@ -327,11 +719,13 @@ define('createProblem', async ({ payload, context }) => {
 define('getSettings', async ({ context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
   if (!(await isJiraAdmin())) return { isAdmin: false };
-  const [settings, fields, organizations] = await Promise.all([loadSettings(), siteFields(), listOrganizations()]);
+  const [settings, { selectable: fields, slaChoices, idChoices }, organizations] = await Promise.all([loadSettings(), siteFieldLists(), listOrganizations()]);
   return {
     isAdmin: true,
     settings,
     fields,
+    slaChoices,
+    idChoices,
     organizations,
   };
 });
@@ -339,13 +733,39 @@ define('getSettings', async ({ context }) => {
 define('saveSettings', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
   if (!(await isJiraAdmin())) throw new Error('Only Jira admins can change Customer Insights settings.');
-  const [fields, organizations] = await Promise.all([siteFields(), listOrganizations()]);
-  const settings = sanitizeSettings(payload?.settings, fields, organizations);
+  const [{ selectable: fields, slaChoices, idChoices }, organizations] = await Promise.all([siteFieldLists(), listOrganizations()]);
+  const settings = sanitizeSettings(payload?.settings, fields, organizations, { slaChoices, idChoices });
   if (settings.alerts.createIssue) settings.alerts.issueTypeId = await alertIssueType(settings.alerts);
+  if (settings.surge.enabled && settings.surge.createIssue) settings.surge.issueTypeId = await alertIssueType(settings.surge);
   await saveSettings(settings);
   const { alerts } = settings;
-  console.log(`saveSettings: ${settings.breakdowns.length} breakdowns, portal ${settings.portalEnabled ? 'on' : 'off'}, alerts ${alerts.enabled ? `on (${alerts.organizations.length} orgs, tickets ${alerts.createIssue ? alerts.projectKey : 'off'})` : 'off'}`);
+  console.log(`saveSettings: ${settings.breakdowns.length} breakdowns, ${settings.internalBreakdowns.length} internal breakdowns, ${settings.projectProfiles.length} project settings, ${settings.slaFields.length} SLAs, ${settings.clientFields.length} client fields, surge ${settings.surge.enabled ? `on (${settings.surge.organizations.length} orgs, tickets ${settings.surge.createIssue ? settings.surge.projectKey : 'off'})` : 'off'}, portal ${settings.portalEnabled ? 'on' : 'off'}, alerts ${alerts.enabled ? `on (${alerts.organizations.length} orgs, tickets ${alerts.createIssue ? alerts.projectKey : 'off'})` : 'off'}`);
   return settings;
+});
+
+// ---- PDF logos (settings page): Jira admins only -------------------------------
+
+define('getLogos', async ({ context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  if (!(await isJiraAdmin())) throw new Error('Only Jira admins can change logos.');
+  const [company, orgs] = await Promise.all([loadLogo('company'), listOrgLogos()]);
+  return { company, orgs };
+});
+
+// payload: { target: 'company' | orgId, logo } — a null logo removes it.
+define('saveLogo', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  if (!(await isJiraAdmin())) throw new Error('Only Jira admins can change logos.');
+  const target = payload?.target === 'company' ? 'company' : String(payload?.target ?? '');
+  const logo = payload?.logo ? sanitizeLogo(payload.logo) : null;
+  if (payload?.logo && !logo) throw new Error('That image couldn’t be used. Use a PNG or JPEG under about 150 KB.');
+  if (target !== 'company') {
+    if (!(await listOrganizations()).some((o) => o.id === target)) throw new Error('That organisation wasn’t found.');
+    if (logo && !(await loadLogo(target)) && Object.keys(await listOrgLogos()).length >= MAX_ORG_LOGOS) throw new Error(`Up to ${MAX_ORG_LOGOS} organisation logos.`);
+  }
+  await saveLogo(target, logo);
+  console.log(`saveLogo: ${target === 'company' ? 'company' : 'organisation'} ${logo ? `saved (${logo.dataUrl.length} chars)` : 'removed'}`);
+  return { target, logo };
 });
 
 // ---- Backup & restore (settings page): Jira admins only ---------------------

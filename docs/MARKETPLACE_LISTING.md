@@ -8,7 +8,7 @@ Source for the Atlassian Marketplace listing. Keep it in step with the app (READ
   (Atlassian naming rules: "for Jira Service Management", not "JSM". Rename the app in the Developer Console to match.)
 - **App key / Forge app id:** 58294f6b-c741-495f-a435-0b8f253d5db8
 - **Products:** Jira Service Management (Cloud)
-- **Hosting:** Forge; eligible for Runs on Atlassian (no external egress)
+- **Hosting:** Forge. Egress only for optional email reports (Microsoft 365: login.microsoftonline.com, graph.microsoft.com), so not eligible for Runs on Atlassian
 - **Payment model:** Paid via Atlassian (as Follow-Up Manager). Pricing TBC.
 - **EULA:** Atlassian Marketplace standard (Bonterms), as Follow-Up Manager
 - **Support:** https://nuvriqo.atlassian.net/servicedesk/customer/portal/2 · support@nuvriqo.com
@@ -25,7 +25,7 @@ Customer Insights shows service teams what a customer's tickets are really about
 
 Break issues down by your own fields, such as base or device type, and drill in. A data-quality view shows how often those fields are left empty or set to "Unknown". Daily spike alerts flag issues that jump for the customers you watch, optionally as Jira tickets.
 
-When you're ready, publish a reviewed report to the customer portal. Each organisation sees only its own report, kept up to date daily or weekly. Everything runs on Atlassian: no external servers.
+When you're ready, publish a reviewed report to the customer portal. Each organisation sees only its own report, kept up to date daily or weekly. Everything runs on Atlassian; the only outside connection is your own Microsoft 365, if you choose to email reports.
 
 ## Highlights (3)
 

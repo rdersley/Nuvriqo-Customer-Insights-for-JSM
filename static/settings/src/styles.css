@@ -10,3 +10,43 @@
   .cs-row, .cs-row--pair { grid-template-columns: minmax(0, 1fr); }
 }
 .cs-portal { white-space: nowrap; padding-bottom: var(--nq-space-075, 6px); }
+
+.cs-file { position: relative; overflow: hidden; cursor: pointer; }
+.cs-file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+
+/* PDF logos */
+.cs-logo-row { display: grid; grid-template-columns: minmax(0, 1fr) 180px auto; gap: var(--nq-space-150); align-items: center; padding-bottom: var(--nq-space-150); border-bottom: 1px solid var(--nq-border); }
+.cs-logo-row p { margin: var(--nq-space-050) 0 0; }
+.cs-logo { display: block; max-width: 180px; max-height: 56px; object-fit: contain; }
+.cs-logo-select { margin-top: var(--nq-space-075, 6px); }
+.cs-logo-add { align-self: end; padding-bottom: var(--nq-space-050); }
+.cs-file.is-disabled { opacity: 0.5; pointer-events: none; }
+@media (max-width: 700px) { .cs-logo-row { grid-template-columns: minmax(0, 1fr); } }
+
+.cs-chips { display: flex; flex-wrap: wrap; gap: var(--nq-space-075, 6px); align-items: center; }
+.cs-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px var(--nq-space-100); border-radius: var(--nq-radius-sm); background: var(--nq-bg-neutral); color: var(--nq-text); font-weight: 600; }
+.cs-chip__remove { border: 0; background: none; padding: 0 2px; cursor: pointer; color: var(--nq-text-subtle); font: inherit; }
+.cs-chip__remove:hover { color: var(--nq-text); }
+.cs-chip__add { width: auto; min-width: 180px; }
+
+.cs-field-search { margin-bottom: var(--nq-space-075, 6px); }
+
+.cs-tabs { margin-bottom: var(--nq-space-050); }
+.cs-row--noportal { grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) auto; }
+
+.cs-dev-row { grid-template-columns: minmax(0, 1fr) 110px minmax(0, 1.6fr) auto; }
+
+/* Email reports */
+.cs-email-conn summary { cursor: pointer; display: flex; gap: var(--nq-space-100); align-items: center; }
+.cs-email-list, .cs-email-log { list-style: none; margin: var(--nq-space-075, 6px) 0; padding: 0; }
+.cs-email-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--nq-space-150); align-items: center; padding: var(--nq-space-100) 0; border-bottom: 1px solid var(--nq-border); }
+.cs-email-list p, .cs-email-log li { margin: 2px 0 0; }
+.cs-email-form { padding: var(--nq-space-150); border: 1px solid var(--nq-border); border-radius: var(--nq-radius-sm); margin-top: var(--nq-space-100); }
+.cs-email-when { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.cs-email-test { align-items: end; }
+@media (max-width: 700px) { .cs-email-list li, .cs-email-when { grid-template-columns: minmax(0, 1fr); } }
+
+
+/* Device fleet sizes */
+.cs-fleet .nq-input { max-width: 120px; margin-left: auto; }
+.cs-fleet-add { align-items: end; margin-top: var(--nq-space-150); }

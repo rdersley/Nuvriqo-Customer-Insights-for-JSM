@@ -7,9 +7,16 @@ import { AppHeader, Button, Card, EmptyState, Field, Footer, Kpi, Loading, Lozen
 import { version } from '../../../package.json';
 import { localIso, matchPreset, presetRange, PRESETS } from '../../../src/dates.js';
 import { analyseEveryTicket, Cancelled, FULL_LIMIT } from './fullAnalysis.js';
+import { exportPdf } from './exportPdf.js';
+import { EffortCard, FlowCard, KnowledgeCard, SlaCard } from './WorkloadCards.jsx';
+import TeamPerformance from './TeamPerformance.jsx';
+import EscalationCard from './EscalationCard.jsx';
+import ChannelPicker, { useChannel } from './ChannelPicker.jsx';
+import DevicesCard, { impactLine, PriorityLozenge } from './DevicesCard.jsx';
 import { applyMerges, categoriesOf, median, patternTrend, topShares } from '../../../src/analysis.js';
 import { jqlClause, jqlEmptyClause } from '../../../src/settings.js';
 import { changeText } from '../../../src/alertText.js';
+import { surgeText } from '../../../src/surge.js';
 import { duration, sparkPath, trendWord } from '../../../src/trend.js';
 import { DAYS, hoursOf, outOfHoursShare, peakWindow, WORKING, windowText } from '../../../src/timeOfDay.js';
 
@@ -17,6 +24,27 @@ import { DAYS, hoursOf, outOfHoursShare, peakWindow, WORKING, windowText } from 
 const LOCAL_ZONE = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
 
 /** Day-of-week × hour heatmap; cell shade is the share of the busiest cell. */
+/** "When tickets arrive": heatmap, busiest hours and day, optionally by contact channel. */
+function WhenTicketsArrive({ timeOfDay }) {
+  const channel = useChannel(timeOfDay);
+  const { timeZone, estimated, analysed } = timeOfDay;
+  const grid = channel.grid;
+  const total = grid.flat().reduce((a, n) => a + n, 0) || 1;
+  const peak = peakWindow(hoursOf(grid));
+  const outside = outOfHoursShare(grid);
+  const dayTotals = grid.map((row) => row.reduce((a, n) => a + n, 0));
+  const busiestDay = DAYS[dayTotals.indexOf(Math.max(...dayTotals))];
+  return <Card title="When tickets arrive" description={`Created time in ${timeZone}. ${estimated ? `Shares of the ${analysed.toLocaleString()} analysed tickets.` : 'All tickets in the period.'}`}>
+    <ChannelPicker timeOfDay={timeOfDay} channel={channel} />
+    <div className="nq-kpis ci-when">
+      {peak && <Kpi icon="◷" label="Busiest 3 hours" value={windowText(peak)} hint={`${peak.share}% of ${channel.chosen ? channel.chosen.value : ''} tickets`.replace('  ', ' ')} />}
+      <Kpi icon="▦" label="Busiest day" value={busiestDay} hint={`${Math.round((Math.max(...dayTotals) / total) * 100)}% of tickets`} />
+      {outside !== null && <Kpi icon="☾" kind={outside >= 30 ? 'warning' : 'info'} label="Out of hours" value={`${outside}%`} hint={`outside ${String(WORKING.from).padStart(2, '0')}:00–${WORKING.to}:00 Mon–Fri`} />}
+    </div>
+    <TimeHeatmap grid={grid} />
+  </Card>;
+}
+
 function TimeHeatmap({ grid }) {
   const max = Math.max(1, ...grid.flat());
   return <div className="ci-heat" role="img" aria-label="Tickets by day of week and hour of day">
@@ -99,10 +127,26 @@ function App() {
   const [siteUrl, setSiteUrl] = useState('');
   const [alerts, setAlerts] = useState([]);
   const [pendingRun, setPendingRun] = useState(null);
+  const [pdfBusy, setPdfBusy] = useState(false);
   // Create problem: the open form (one at a time) and what was created, by pattern id.
   const [problemForm, setProblemForm] = useState(null);
   const [problems, setProblems] = useState({});
   const [creatingProblem, setCreatingProblem] = useState(false);
+  // Internal analysis: projects and/or clients instead of JSM organisations.
+  const [mode, setMode] = useState('customers');
+  const [projectList, setProjectList] = useState(null); // { projects, clientFields } once loaded
+  const [internalProjects, setInternalProjects] = useState([]);
+  const [clients, setClients] = useState([]);
+  const [clientText, setClientText] = useState('');
+  const [clientOptions, setClientOptions] = useState([]);
+  // Flow, backlog and forecast (analyzeFlow), loaded after each analysis.
+  const [flow, setFlow] = useState(null);
+  const [flowLoading, setFlowLoading] = useState(false);
+  const [flowError, setFlowError] = useState('');
+  // Team performance (agentPerformance), loaded after each analysis like flow.
+  const [team, setTeam] = useState({ data: null, loading: false, error: '' });
+  // Escalation levels (internal, project settings that switch it on).
+  const [escalation, setEscalation] = useState({ data: null, loading: false, error: '' });
 
   useEffect(() => {
     view.getContext().then((context) => setSiteUrl(String(context?.siteUrl || '').replace(/\/$/, ''))).catch(() => {});
@@ -121,6 +165,15 @@ function App() {
       .finally(() => setLoadingOrgs(false));
   }, []);
 
+  // Live surges are checked every 5 minutes; keep the list current while the page is open.
+  useEffect(() => {
+    if (!licensed) return undefined;
+    const timer = setInterval(() => { invoke('getAlerts').then((a) => setAlerts(a?.alerts || [])).catch(() => {}); }, 120000);
+    return () => clearInterval(timer);
+  }, [licensed]);
+  const surges = alerts.filter((a) => a.kind === 'surge');
+  const spikes = alerts.filter((a) => a.kind !== 'surge');
+
   // "Analyse" on an alert fills in the form; the run starts once the choices apply.
   useEffect(() => {
     if (pendingRun && orgIds.length === 1 && orgIds[0] === pendingRun.orgId && from === pendingRun.from && to === pendingRun.to) {
@@ -131,7 +184,7 @@ function App() {
 
   function analyseAlert(alert) {
     if (!orgs.some((o) => o.id === alert.organization.id)) return;
-    setOrgIds([alert.organization.id]); setFrom(alert.window.from); setTo(alert.window.to); setProjectsText('');
+    setMode('customers'); setOrgIds([alert.organization.id]); setFrom(alert.window.from); setTo(alert.window.to); setProjectsText('');
     setPendingRun({ orgId: alert.organization.id, from: alert.window.from, to: alert.window.to });
   }
 
@@ -185,20 +238,53 @@ function App() {
   const labelEvery = Math.max(1, Math.ceil((report?.timeSeries?.length || 0) / 10));
   const totalChange = report?.changePercent === null ? 'New baseline' : `${signed(report?.changePercent)}%`;
 
+  const internal = mode === 'internal';
+  const canRun = internal ? internalProjects.length > 0 || clients.length > 0 : Boolean(selectedOrg);
+
   async function runAnalysis(event, nextFilter = null) {
     event?.preventDefault?.();
-    if (!selectedOrg) return;
+    if (!canRun) return;
     setFilter(nextFilter);
     cancelFull.current = true;
     setLoadingReport(true); setError(''); setReport(null); setAi(null); setAiError(''); setFullRun(null); setFullError('');
-    const query = { organization: selectedOrg, organizations: selectedOrgs, startDate: from, endDate: to, projects, timeZone: LOCAL_ZONE, ...(nextFilter && { filter: { id: nextFilter.id, value: nextFilter.value } }) };
+    setFlow(null); setFlowError(''); setTeam({ data: null, loading: false, error: '' }); setEscalation({ data: null, loading: false, error: '' });
+    const shared = { startDate: from, endDate: to, timeZone: LOCAL_ZONE, ...(nextFilter && { filter: { id: nextFilter.id, value: nextFilter.value } }) };
+    const query = internal
+      ? { scope: 'internal', projects: internalProjects, clients, ...shared }
+      : { organization: selectedOrg, organizations: selectedOrgs, projects, ...shared };
     try {
       const result = await invoke('analyze', query);
       setReport(result);
       setLastQuery(query);
+      setFlowLoading(true);
+      invoke('analyzeFlow', query).then(setFlow).catch((e) => setFlowError(e.message || 'Flow counts failed.')).finally(() => setFlowLoading(false));
+      // Team performance is for internal analyses only.
+      if (internal) {
+        setTeam({ data: null, loading: true, error: '' });
+        invoke('agentPerformance', query).then((data) => setTeam({ data, loading: false, error: '' })).catch((e) => setTeam({ data: null, loading: false, error: e.message || 'Team performance couldn’t be worked out.' }));
+        setEscalation({ data: null, loading: true, error: '' });
+        invoke('escalation', query).then((data) => setEscalation({ data, loading: false, error: '' })).catch((e) => setEscalation({ data: null, loading: false, error: e.message || 'Escalation levels couldn’t be worked out.' }));
+      }
     } catch (e) { setError(e.message || 'Analysis failed. Check your Jira access and filters.'); }
     finally { setLoadingReport(false); }
   }
+
+  // Internal mode: load projects and client fields each time the tab opens (an
+  // admin may have just changed the client fields), and suggest client values.
+  useEffect(() => {
+    if (!internal) return;
+    invoke('getProjects').then(setProjectList).catch((e) => setError(e.message || 'Projects could not be loaded.'));
+  }, [internal]);
+  useEffect(() => {
+    if (!internal || !projectList?.clientFields?.length) return undefined;
+    const timer = setTimeout(() => { invoke('suggestClients', { text: clientText }).then((list) => setClientOptions(list || [])).catch(() => {}); }, 300);
+    return () => clearTimeout(timer);
+  }, [internal, clientText, projectList]);
+  const addClient = (value) => {
+    const v = String(value || '').trim();
+    if (v && !clients.includes(v) && clients.length < 10) setClients((list) => [...list, v]);
+    setClientText('');
+  };
 
   async function runFull() {
     cancelFull.current = false;
@@ -225,6 +311,7 @@ function App() {
     if (!report || !reportOrgId) return;
     invoke('getPublication', { orgId: reportOrgId }).then(setPublication).catch((e) => setPublishError(e.message || 'Could not check the portal report.'));
   }, [report?.organization, report?.startDate, report?.endDate, reportOrgId]);
+
 
   function prepareDraft() {
     setPublishError('');
@@ -332,59 +419,6 @@ function App() {
     .filter(Boolean)
     .join(' · ');
 
-  const [pdfBusy, setPdfBusy] = useState(false);
-  // The PDF module (jsPDF) loads only when someone asks for a PDF.
-  async function exportPdf() {
-    if (!report) return;
-    setPdfBusy(true);
-    try {
-      const { downloadReportPdf } = await import('../../../src/pdfReport.js');
-      const date = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
-      const approx = (g) => (g.estimated ? '≈' : '');
-      const changeOf = (g) => (!g.previousCount ? { kind: 'new', text: 'New' } : g.change > 0 ? { kind: 'up', text: `↑ ${g.change}` } : g.change < 0 ? { kind: 'down', text: `↓ ${Math.abs(g.change)}` } : { kind: 'new', text: '→ 0' });
-      const name = report.organizations?.length > 1 ? `${report.organizations.length} organisations` : report.organization;
-      downloadReportPdf({
-        title: name,
-        subtitle: `${date(report.startDate)} – ${date(report.endDate)}${report.organizations?.length > 1 ? ` · ${report.organization}` : ''}`,
-        generatedAt: new Date(),
-        kpis: [
-          { label: 'Tickets in period', value: report.currentCount.toLocaleString(), hint: `previous period ${report.previousCount.toLocaleString()}` },
-          { label: 'Vs previous period', value: totalChange, hint: `${signed(report.change)} tickets` },
-          { label: 'Recurring issues', value: String(groups.length), hint: `with at least ${report.minPatternSize || 2} related tickets` },
-          ...(report.resolution ? [{ label: 'Median time to resolve', value: duration(report.resolution.medianHours), hint: report.resolution.openShare ? `${report.resolution.openShare}% still open` : 'all resolved' }] : []),
-        ],
-        chart: { title: 'Tickets over time', points: report.timeSeries },
-        summary: ai?.overview ? { heading: 'AI summary', text: ai.overview, note: 'Written by Atlassian-hosted AI from ticket summaries. Review before sharing.' } : null,
-        actions: ai?.actions || [],
-        categories: hasCategories ? ai.categories.map((c) => ({
-          title: c.title,
-          count: `${c.estimated ? '≈' : ''}${c.count}`,
-          change: changeOf(c),
-          share: `${Math.round((c.count / patternTickets) * 100)}% of pattern tickets`,
-          patterns: c.members.slice(0, 6).map((i) => `${patternName(groups[i], i)} (${groups[i].count})`).join(' · ') + (c.members.length > 6 ? ` and ${c.members.length - 6} more` : ''),
-        })) : [],
-        issues: groups.slice(0, 15).map((g, index) => {
-          const peak = peakWindow(g.hours);
-          return {
-            title: patternName(g, index),
-            summary: aiPattern(index)?.summary || g.sampleSummary,
-            count: `${approx(g)}${g.count}`,
-            change: changeOf(g),
-            trend: patternTrend(g, report),
-            when: [trendWord(patternTrend(g, report)), peak && `mostly ${windowText(peak)} (${peak.share}%)`, whereOf(g)].filter(Boolean).join(' · '),
-            resolution: resolutionText(groupResolution(g)),
-            examples: g.tickets.slice(0, 3).map((t) => ({ key: t.key, summary: t.summary, status: t.status })),
-          };
-        }),
-        breakdowns: (report.breakdowns || []).map((b) => ({ label: b.label, values: b.values.map((v) => ({ value: v.value, count: v.count, countText: `${b.estimated ? '≈' : ''}${v.count.toLocaleString()}` })) })),
-        timeOfDay: report.timeOfDay || null,
-        footnote: `Tickets shared with ${report.organization}, as visible to the agent who exported this report. Issues are grouped from ticket wording and are clues for review, not confirmed root causes.${report.sampled ? ' Counts marked ~ are estimated from an even sample; totals and the chart are exact.' : ''}`,
-      }, `customer-insights-${String(name).toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${report.startDate}-${report.endDate}.pdf`);
-    } catch (e) {
-      setError(`The PDF couldn’t be created: ${e.message || e}`);
-    } finally { setPdfBusy(false); }
-  }
-
   function exportCsv() {
     if (!report) return;
     const rows = [['Customer', report.organization], ['Period', `${report.startDate} to ${report.endDate}`]];
@@ -411,6 +445,19 @@ function App() {
     link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
     link.download = `customer-insights-${(selectedOrgs.length > 1 ? `${selectedOrgs.length}-organisations` : selectedOrg.name).toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${from}-${to}.csv`;
     link.click(); URL.revokeObjectURL(link.href);
+  }
+
+  // The report as shown, AI names and summary included.
+  async function downloadPdf() {
+    if (!report) return;
+    setPdfBusy(true);
+    try {
+      // Logos are optional: a failed lookup still gives a PDF.
+      const logos = await invoke('getPdfLogos', { orgId: reportOrgId || null }).catch(() => null);
+      await exportPdf({ report, groups, ai, filter: report.filter, logos, product: PRODUCT, version });
+    } catch (e) {
+      setError(`The PDF couldn’t be created: ${e.message || 'unknown error'}`);
+    } finally { setPdfBusy(false); }
   }
 
   // "Open in Jira" links. The site address comes from Forge's context: ticket
@@ -527,11 +574,12 @@ function App() {
 
   return <div className="nq-page">
     <AppHeader
+     
       product={PRODUCT}
       subtitle="See recurring issues and what’s changing across a customer’s tickets."
       version={version}
       actions={report && <>
-        <Button onClick={exportPdf} disabled={pdfBusy}>{pdfBusy ? 'Creating PDF…' : 'Download PDF'}</Button>
+        <Button onClick={downloadPdf} disabled={pdfBusy}>{pdfBusy ? 'Creating PDF…' : 'Export PDF'}</Button>
         <Button onClick={exportCsv}>Export CSV</Button>
       </>}
     />
@@ -540,11 +588,33 @@ function App() {
       Analysis is unavailable until the app has an active Marketplace licence. Ask a Jira admin to check it in Manage apps.
     </Notice>}
 
-    {licensed && alerts.length > 0 && <Card
-      title={<>Spike alerts <span className="nq-pill nq-pill--neutral">{alerts.length}</span></>}
+    {licensed && surges.length > 0 && <Card accent
+      title={<>Live surges <span className="nq-pill nq-pill--neutral">{surges.length}</span></>}
+      description="Lots of tickets about the same issue arriving at once from a watched organisation. Checked every 5 minutes; check the tickets before alerting anyone."
+    >
+      <ul className="ci-alerts">{surges.map((alert) => <li key={alert.id}>
+        <div className="ci-alerts__text">
+          <strong><Lozenge kind="danger">Surge</Lozenge> {alert.organization.name}: {alert.theme}</strong>
+          <span className="nq-muted">{surgeText({ ...alert.surge, count: alert.count, bases: { length: alert.surge.bases } })} · since {new Date(alert.surge.startedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}{alert.surge.updatedAt !== alert.surge.startedAt ? `, last ticket added ${new Date(alert.surge.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}</span>
+          {alert.surge.devices?.length > 0 && <span>Devices affected: {impactLine(alert.surge.devices)} <PriorityLozenge suggested={alert.surge.suggested} /></span>}
+          <span className="ci-alerts__links">
+            {alert.keys?.length > 0 && <JiraLink href={jiraSearch(`key in (${alert.keys.slice(0, MAX_LINK_KEYS).join(', ')}) ORDER BY created DESC`)}>Open {Math.min(alert.keys.length, MAX_LINK_KEYS)} tickets in Jira</JiraLink>}
+            {alert.issueKey && <> · Incident <JiraLink href={siteUrl ? `${siteUrl}/browse/${alert.issueKey}` : ''}>{alert.issueKey}</JiraLink> <span className="nq-muted">(send a System Alert from there)</span></>}
+            {alert.issueError && <> · <Lozenge kind="warning">Incident not created</Lozenge> <span className="nq-muted">{alert.issueError}</span></>}
+          </span>
+        </div>
+        <div className="ci-alerts__actions">
+          <Button small onClick={() => analyseAlert(alert)} disabled={loadingReport || !orgs.some((o) => o.id === alert.organization.id)}>Analyse today</Button>
+          <Button small appearance="subtle" onClick={() => dismissAlert(alert)}>Dismiss</Button>
+        </div>
+      </li>)}</ul>
+    </Card>}
+
+    {licensed && spikes.length > 0 && <Card
+      title={<>Spike alerts <span className="nq-pill nq-pill--neutral">{spikes.length}</span></>}
       description="Patterns that jumped in a watched organisation’s last 7 days, against the 7 before. Checked once a day."
     >
-      <ul className="ci-alerts">{alerts.map((alert) => <li key={alert.id}>
+      <ul className="ci-alerts">{spikes.map((alert) => <li key={alert.id}>
         <div className="ci-alerts__text">
           <strong>{alert.organization.name}: {alert.theme}</strong>
           <span className="nq-muted">{changeText(alert)} · {new Date(`${alert.window.from}T00:00:00`).toLocaleDateString()} to {new Date(`${alert.window.to}T00:00:00`).toLocaleDateString()}</span>
@@ -562,7 +632,40 @@ function App() {
     </Card>}
 
     {licensed && <Card>
-      <form className="nq-filters ci-filters" onSubmit={runAnalysis}>
+      <div className="ci-mode"><Tabs items={[{ id: 'customers', label: 'Customers' }, { id: 'internal', label: 'Internal' }]} active={mode} onChange={setMode} /></div>
+      {internal ? <form className="nq-filters ci-filters" onSubmit={runAnalysis}>
+        <Field label={`Projects (${internalProjects.length})`} htmlFor="ci-int-projects">
+          <select id="ci-int-projects" className="nq-select" value="" disabled={!projectList}
+            onChange={(e) => { const key = e.target.value; if (key) setInternalProjects((list) => (list.includes(key) ? list : [...list, key])); }}>
+            <option value="">{projectList ? 'Add a project…' : 'Loading projects…'}</option>
+            {(projectList?.projects || []).filter((p) => !internalProjects.includes(p.key)).map((p) => <option key={p.key} value={p.key}>{p.name} ({p.key})</option>)}
+          </select>
+        </Field>
+        <Field label={`Clients (optional, ${clients.length})`} htmlFor="ci-int-client"
+          help={projectList && !projectList.clientFields?.length ? 'A Jira admin chooses the client fields in Customer Insights settings.' : undefined}>
+          <div className="ci-picker">
+            <input id="ci-int-client" className="nq-input" list="ci-int-client-options" value={clientText} placeholder="Type a client" disabled={!projectList?.clientFields?.length}
+              onChange={(e) => { const v = e.target.value; if (clientOptions.includes(v)) addClient(v); else setClientText(v); }}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addClient(clientText); } }} />
+            <datalist id="ci-int-client-options">{clientOptions.filter((c) => !clients.includes(c)).map((c) => <option key={c} value={c} />)}</datalist>
+          </div>
+        </Field>
+        <Field label="Period" htmlFor="ci-int-period">
+          <select id="ci-int-period" className="nq-select" value={preset} onChange={(e) => choosePreset(e.target.value)}>
+            {PRESETS.map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
+            <option value="custom" disabled={preset !== 'custom'}>Custom dates</option>
+          </select>
+        </Field>
+        <Field label="From" htmlFor="ci-int-from">
+          <input id="ci-int-from" className="nq-input" type="date" value={from} max={to} onChange={(e) => setFrom(e.target.value)} />
+        </Field>
+        <Field label="To" htmlFor="ci-int-to">
+          <input id="ci-int-to" className="nq-input" type="date" value={to} min={from} max={today} onChange={(e) => setTo(e.target.value)} />
+        </Field>
+        <Button appearance="primary" type="submit" disabled={!canRun || loadingReport}>
+          {loadingReport ? 'Analysing…' : 'Run analysis'}
+        </Button>
+      </form> : <form className="nq-filters ci-filters" onSubmit={runAnalysis}>
         <Field label="Customer organisation" htmlFor="ci-org">
           <select id="ci-org" className="nq-select" value={orgIds[0] || ''} onChange={(e) => setOrgIds((ids) => [e.target.value, ...ids.slice(1).filter((id) => id !== e.target.value)])} disabled={loadingOrgs || !orgs.length}>
             {loadingOrgs && <option>Loading organisations…</option>}
@@ -595,23 +698,42 @@ function App() {
         <Button appearance="primary" type="submit" disabled={!selectedOrg || loadingOrgs || loadingReport}>
           {loadingReport ? 'Analysing…' : 'Run analysis'}
         </Button>
-      </form>
-      {selectedOrgs.length > 1 && <div className="ci-chips" aria-label="Selected organisations">
+      </form>}
+      {internal && (internalProjects.length > 0 || clients.length > 0) && <div className="ci-chips" aria-label="Selected projects and clients">
+        {internalProjects.map((key) => <span className="ci-chip" key={key}>
+          {projectList?.projects?.find((p) => p.key === key)?.name || key}
+          <button type="button" aria-label={`Remove ${key}`} onClick={() => setInternalProjects((list) => list.filter((k) => k !== key))}>×</button>
+        </span>)}
+        {clients.map((c) => <span className="ci-chip" key={c}>
+          Client: {c}
+          <button type="button" aria-label={`Remove ${c}`} onClick={() => setClients((list) => list.filter((x) => x !== c))}>×</button>
+        </span>)}
+      </div>}
+      {!internal && selectedOrgs.length > 1 && <div className="ci-chips" aria-label="Selected organisations">
         {selectedOrgs.map((org) => <span className="ci-chip" key={org.id}>
           {org.name}
           <button type="button" aria-label={`Remove ${org.name}`} onClick={() => setOrgIds((ids) => ids.filter((id) => id !== org.id))}>×</button>
         </span>)}
         <Button small appearance="subtle" onClick={() => setOrgIds((ids) => ids.slice(0, 1))}>Clear extra</Button>
       </div>}
-      <p className="nq-muted">
+      {internal ? <p className="nq-muted">
+        Analyses tickets in these projects, and only for these clients when you add any (read from {projectList?.clientFields?.map((x) => x.name).join(' or ') || 'the client fields'}). Leave projects empty to follow a client across every project. Results follow your Jira permissions.
+      </p> : <p className="nq-muted">
         {selectedOrgs.length > 1
           ? 'Analyses tickets shared with any of these organisations together, with a breakdown by organisation. Portal reports need a single organisation.'
           : 'Uses tickets shared with this organisation.'} Results follow your Jira permissions.
-      </p>
+      </p>}
     </Card>}
 
     {error && <Notice kind="error" title="We couldn’t complete that request.">{error}</Notice>}
 
+    {report?.settingsUsed && <p className="nq-muted">
+      {report.settingsUsed.profile
+        ? <>Using the <strong>{report.settingsUsed.profile.name}</strong> project settings (breakdowns, SLAs and patterns).</>
+        : report.settingsUsed.mixed
+          ? 'Using the default internal settings: the chosen projects have different project settings. Analyse them separately to use their own.'
+          : 'Using the default internal settings.'}
+    </p>}
     {filter && <Notice>
       <div className="nq-spread">
         <span>Showing only tickets where <strong>{filter.label}</strong> is <strong>{filter.value}</strong>.</span>
@@ -686,6 +808,12 @@ function App() {
         </Card>
       </div>
 
+      <FlowCard flow={flow} loading={flowLoading} error={flowError} timeOfDay={report.timeOfDay} />
+
+      {lastQuery?.scope === 'internal' && <TeamPerformance data={team.data} loading={team.loading} error={team.error} />}
+
+      {lastQuery?.scope === 'internal' && <EscalationCard data={escalation.data} loading={escalation.loading} error={escalation.error} />}
+
       {report.breakdowns?.length > 0
         ? <div className="nq-grid ci-breakdowns">{report.breakdowns.map((b) => {
           const top = Math.max(1, ...b.values.map((v) => v.count));
@@ -712,22 +840,7 @@ function App() {
         })}</div>
         : <p className="nq-muted">Tip: a Jira admin can add breakdowns by base, device type or any other field in <strong>Jira settings → Apps → Customer Insights</strong>.</p>}
 
-      {report.timeOfDay?.analysed > 0 && (() => {
-        const { grid, timeZone, estimated, analysed } = report.timeOfDay;
-        const hours = hoursOf(grid);
-        const peak = peakWindow(hours);
-        const outside = outOfHoursShare(grid);
-        const dayTotals = grid.map((row) => row.reduce((a, n) => a + n, 0));
-        const busiestDay = DAYS[dayTotals.indexOf(Math.max(...dayTotals))];
-        return <Card title="When tickets arrive" description={`Created time in ${timeZone}. ${estimated ? `Shares of the ${analysed.toLocaleString()} analysed tickets.` : 'All tickets in the period.'}`}>
-          <div className="nq-kpis ci-when">
-            {peak && <Kpi icon="◷" label="Busiest 3 hours" value={windowText(peak)} hint={`${peak.share}% of tickets`} />}
-            <Kpi icon="▦" label="Busiest day" value={busiestDay} hint={`${Math.round((Math.max(...dayTotals) / Math.max(1, analysed)) * 100)}% of tickets`} />
-            {outside !== null && <Kpi icon="☾" kind={outside >= 30 ? 'warning' : 'info'} label="Out of hours" value={`${outside}%`} hint={`outside ${String(WORKING.from).padStart(2, '0')}:00–${WORKING.to}:00 Mon–Fri`} />}
-          </div>
-          <TimeHeatmap grid={grid} />
-        </Card>;
-      })()}
+      {report.timeOfDay?.analysed > 0 && <WhenTicketsArrive timeOfDay={report.timeOfDay} />}
 
       {qualityIssues.length > 0 && <Card
         title="Data quality"
@@ -806,6 +919,14 @@ function App() {
             : <div className="ci-patterns">{groups.map(renderPattern)}</div>
           : <EmptyState compact title="No repeated issue patterns detected">There are no groups of similar tickets with more than one request in this period.</EmptyState>}
       </Card>
+
+      <EffortCard report={report} groups={groups} nameOf={patternName} />
+
+      <DevicesCard report={report} groups={groups} nameOf={patternName} />
+
+      <SlaCard report={report} groups={groups} nameOf={patternName} />
+
+      <KnowledgeCard key={report.baseJql} groups={groups} nameOf={patternName} invoke={invoke} />
 
       {!reportOrgId && report.organizations?.length > 1 && <p className="nq-muted">Portal reports are published for one organisation at a time. Choose a single organisation to prepare one.</p>}
 

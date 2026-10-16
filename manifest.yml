@@ -1,6 +1,8 @@
 modules:
   jira:globalPage:
     - key: nuvriqo-customer-insights
+      # The Nuvriqo logo (static/app/public/icon.png) in the Jira sidebar.
+      icon: resource:main;icon.png
       resource: main
       resolver:
         function: resolver
@@ -39,6 +41,10 @@ modules:
     - key: live-reports-hourly
       function: live-scheduler
       interval: hour
+    # Live surge detection (src/surgeJobs.js); does nothing until switched on.
+    - key: surge-check
+      function: surge-detector
+      interval: fiveMinute
   consumer:
     - key: live-report-consumer
       queue: live-report-refresh
@@ -54,6 +60,9 @@ modules:
     - key: live-refresh
       handler: liveJobs.consumer
       timeoutSeconds: 900
+    - key: surge-detector
+      handler: surgeJobs.scheduler
+      timeoutSeconds: 120
   # Atlassian-hosted Claude for the opt-in AI summary (src/ai.js).
   llm:
     - key: insights-llm
@@ -82,6 +91,12 @@ permissions:
     - read:organization:jira-service-management
     # Published portal reports (src/storage.js)
     - storage:app
+  # Email reports (src/graph.js): Microsoft 365 sign-in and Graph sendMail only.
+  external:
+    fetch:
+      backend:
+        - address: https://login.microsoftonline.com
+        - address: https://graph.microsoft.com
   content:
     styles:
       - unsafe-inline

@@ -1,235 +1,233 @@
-// A Customer Insights report as a PDF, drawn in the browser with jsPDF from a
-// plain "model" (the agent page and the portal each build one). Nothing is
-// sent anywhere; the file is downloaded like the CSV export.
-//
-// model: {
-//   title, subtitle, generatedAt (Date), kpis: [{ label, value, hint }],
-//   chart: { title, points: [{ date, count }] } | null,
-//   summary: { heading, text, note } | null, actions: [string],
-//   issues: [{ title, summary, count, change, trend: [{ count, days }], when, resolution, examples: [{ key, summary, status }] }],
-//   breakdowns: [{ label, values: [{ value, count }] }],
-//   timeOfDay: { timeZone, grid: 7x24 } | null,
-//   footnote,
-// }
-import { jsPDF } from 'jspdf';
-import { DAYS, hoursOf, peakWindow, windowText } from './timeOfDay.js';
+// What goes in the PDF export, as plain data. The page draws it with jsPDF
+// (static/app/src/exportPdf.js); keeping the wording here means it can be
+// tested and stays in step with what the page shows.
+import { median, patternTrend, topShares } from './analysis.js';
+import { duration, trendWord } from './trend.js';
+import { DAYS, hoursOf, outOfHoursShare, peakWindow, windowText } from './timeOfDay.js';
+import { gridSummary } from './channels.js';
 
-// PDF colours (the document has no CSS; these match the Nuvriqo UI kit).
-const C = {
-  brand: [12, 102, 228], text: [23, 43, 77], subtle: [98, 111, 134], faint: [140, 155, 171],
-  border: [223, 225, 230], panel: [247, 248, 249], band: [11, 58, 153], white: [255, 255, 255],
-  up: [127, 95, 1], upBg: [255, 247, 214], down: [33, 110, 78], downBg: [220, 255, 241], newBg: [243, 240, 255], newText: [94, 77, 178],
+/** Per contact channel rows for the PDF: share, busiest hours and day, out of hours. */
+const channelRows = (byChannel) => (Array.isArray(byChannel) ? byChannel : []).map((c) => {
+  const s = gridSummary(c.grid);
+  return s ? { value: c.value, share: `${c.share}%`, busiestHours: s.busiestHours || '–', busiestDay: s.busiestDay, outOfHours: `${s.outOfHours ?? 0}%`, grid: c.grid } : null;
+}).filter(Boolean);
+
+export const PDF_ISSUES = 25; // issues in the table
+export const PDF_DETAILS = 10; // issues with example tickets
+export const PDF_EXAMPLES = 3;
+
+const signed = (n) => `${n > 0 ? '+' : ''}${n}`;
+const approx = (estimated) => (estimated ? '~' : '');
+const changeText = (count, previous) => {
+  if (!previous) return count ? 'New' : '–';
+  const percent = Math.round(((count - previous) / previous) * 100);
+  return `${signed(percent)}%`;
 };
-const PAGE = { w: 595.28, h: 841.89, m: 40 };
+const peakText = (hours) => { const w = peakWindow(hours); return w ? `${windowText(w)} (${w.share}%)` : ''; };
 
-// The built-in PDF fonts only cover Windows-1252; anything else becomes a
-// close ASCII form or "?" so text never turns into garbage.
-const CP1252 = new Set('€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ');
-const SWAP = { 'Ł': 'L', 'ł': 'l', 'Đ': 'D', 'đ': 'd', 'Ħ': 'H', 'ħ': 'h', 'ı': 'i', '≈': '~', '↑': '+', '↓': '-', '→': '->', '←': '<-', '×': 'x', ' ': ' ', ' ': ' ', ' ': ' ' };
-export function pdfText(value) {
-  return [...String(value ?? '')].map((ch) => {
-    if (SWAP[ch]) return SWAP[ch];
-    const code = ch.codePointAt(0);
-    if ((code >= 32 && code <= 126) || (code >= 160 && code <= 255) || CP1252.has(ch)) return ch;
-    if (code === 10) return ch;
-    const plain = ch.normalize('NFKD').replace(/[̀-ͯ]/g, '');
-    return plain && [...plain].every((c) => c.codePointAt(0) < 127) ? plain : '?';
-  }).join('');
+/** Median time to resolve and share still open: "2.1 days · 12% open". */
+export function resolutionLine({ medianHours, openShare } = {}) {
+  return [medianHours !== null && medianHours !== undefined ? `${duration(medianHours)} to resolve` : '', openShare ? `${openShare}% open` : '']
+    .filter(Boolean).join(' · ');
 }
 
-export function buildReportPdf(model) {
-  const doc = new jsPDF({ unit: 'pt', format: 'a4' });
-  const W = PAGE.w - 2 * PAGE.m;
-  let y = PAGE.m;
-  const set = (size, style = 'normal', colour = C.text) => { doc.setFont('helvetica', style); doc.setFontSize(size); doc.setTextColor(...colour); };
-  const ensure = (h) => { if (y + h > PAGE.h - PAGE.m - 18) { doc.addPage(); y = PAGE.m; } };
-  const lines = (text, width, size) => { doc.setFontSize(size); return doc.splitTextToSize(pdfText(text), width); };
-  const paragraph = (text, { size = 10, style = 'normal', colour = C.text, width = W, x = PAGE.m, gap = 4 } = {}) => {
-    const ls = lines(text, width, size);
-    const lh = size * 1.3;
-    for (const l of ls) { ensure(lh); set(size, style, colour); doc.text(l, x, y + size); y += lh; }
-    y += gap;
+/**
+ * The report as PDF sections. `groups` are the patterns as shown (AI-merged
+ * after "Summarise with AI"); `ai` is the AI summary, if any.
+ */
+export function pdfContent({ report, groups = report?.groups || [], ai = null, generatedAt = new Date(), filter = null }) {
+  if (!report) throw new Error('There is no report to export.');
+  const nameOf = (group, index) => ai?.patterns?.find((p) => p.index === index)?.title || group.theme;
+  const whereOf = (group) => (report.breakdownFields || [])
+    .map((f) => {
+      const shares = topShares(group, f.id, 2);
+      return shares.length ? `${f.label}: ${shares.map((s) => `${s.value} ${s.share}%`).join(', ')}` : '';
+    })
+    .filter(Boolean)
+    .join(' · ');
+  const resolutionOf = (group) => {
+    const analysed = group.sampleCount || group.count;
+    return { medianHours: median(group.resolvedHours || []), openShare: analysed ? Math.round(((group.openCount || 0) / analysed) * 100) : null };
   };
-  const heading = (text) => { ensure(40); y += 10; set(13, 'bold'); doc.text(pdfText(text), PAGE.m, y + 13); y += 22; };
 
-  // Header band.
-  doc.setFillColor(...C.band); doc.rect(0, 0, PAGE.w, 96, 'F');
-  set(9, 'bold', C.white); doc.text('NUVRIQO  CUSTOMER INSIGHTS', PAGE.m, 30);
-  set(20, 'bold', C.white); doc.text(lines(model.title, W - 140, 20)[0] || '', PAGE.m, 58);
-  set(10, 'normal', C.white); doc.text(pdfText(model.subtitle), PAGE.m, 78);
-  set(8, 'normal', C.white);
-  doc.text(pdfText(`Generated ${model.generatedAt.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}`), PAGE.w - PAGE.m, 30, { align: 'right' });
-  y = 116;
+  const notes = [];
+  if (filter) notes.push(`Only tickets where ${filter.label} is ${filter.value}.`);
+  if (report.sampled) notes.push(`Patterns come from ${report.analyzedCount.toLocaleString('en-GB')} of ${report.currentCount.toLocaleString('en-GB')} tickets, sampled evenly across the period. Sizes marked ~ are estimates; ticket totals and the comparison are exact.`);
+  if (ai) notes.push('Issue names and the overview are AI-generated from pattern names, counts and example summaries. Check the linked tickets before sharing.');
 
-  // Headline numbers.
-  const kpis = (model.kpis || []).slice(0, 4);
-  if (kpis.length) {
-    const gap = 10;
-    const tw = (W - gap * (kpis.length - 1)) / kpis.length;
-    kpis.forEach((k, i) => {
-      const x = PAGE.m + i * (tw + gap);
-      doc.setDrawColor(...C.border); doc.setFillColor(...C.white); doc.roundedRect(x, y, tw, 58, 4, 4, 'FD');
-      set(7, 'bold', C.subtle); doc.text(pdfText(k.label).toUpperCase(), x + 10, y + 16);
-      set(17, 'bold'); doc.text(pdfText(k.value), x + 10, y + 37);
-      set(7.5, 'normal', C.subtle); doc.text(lines(k.hint || '', tw - 20, 7.5)[0] || '', x + 10, y + 50);
-    });
-    y += 72;
+  const kpis = [
+    { label: 'Tickets in period', value: report.currentCount.toLocaleString('en-GB') },
+    { label: 'Vs previous period', value: report.changePercent === null ? 'New baseline' : `${signed(report.changePercent)}%`, hint: `previous ${report.previousCount.toLocaleString('en-GB')}` },
+    { label: 'Recurring issues', value: String(groups.length), hint: `${report.minPatternSize || 2}+ related tickets` },
+  ];
+  if (report.resolution) kpis.push({ label: 'Median time to resolve', value: duration(report.resolution.medianHours), hint: report.resolution.openShare ? `${report.resolution.openShare}% still open` : 'all resolved' });
+
+  const issues = groups.slice(0, PDF_ISSUES).map((group, index) => ({
+    name: nameOf(group, index),
+    count: `${approx(group.estimated)}${group.count.toLocaleString('en-GB')}`,
+    previous: `${approx(group.estimated && group.previousCount)}${(group.previousCount || 0).toLocaleString('en-GB')}`,
+    change: changeText(group.count, group.previousCount),
+    trend: trendWord(patternTrend(group, report)),
+    where: whereOf(group),
+    resolution: resolutionLine(resolutionOf(group)),
+    peak: peakText(group.hours || []),
+    combines: group.mergedFrom?.length > 1 ? group.mergedFrom : null,
+    summary: ai?.patterns?.find((p) => p.index === index)?.summary || '',
+    examples: index < PDF_DETAILS ? (group.tickets || []).slice(0, PDF_EXAMPLES).map((t) => ({ key: t.key, summary: t.summary, status: t.status })) : [],
+  }));
+
+  // AI categories ("Summarise with AI"): member indexes refer to `groups`.
+  const inPatterns = Math.max(1, groups.reduce((n, g) => n + g.count, 0));
+  const categories = (ai?.categories?.length > 1 ? ai.categories : []).map((cat) => ({
+    title: cat.title,
+    share: `${Math.round((cat.count / inPatterns) * 100)}%`,
+    count: `${approx(cat.estimated)}${cat.count.toLocaleString('en-GB')}`,
+    previous: `${approx(cat.estimated && cat.previousCount)}${(cat.previousCount || 0).toLocaleString('en-GB')}`,
+    change: changeText(cat.count, cat.previousCount),
+    patterns: cat.members.filter((i) => groups[i]).slice(0, 6).map((i) => `${nameOf(groups[i], i)} (${groups[i].count})`).join(' · ') + (cat.members.length > 6 ? ` and ${cat.members.length - 6} more` : ''),
+  }));
+
+  const breakdowns = (report.breakdowns || []).filter((b) => b.values.length).map((b) => ({
+    label: b.label,
+    estimated: b.estimated,
+    values: b.values.map((v) => ({
+      value: v.value,
+      count: `${approx(b.estimated)}${v.count.toLocaleString('en-GB')}`,
+      change: changeText(v.count, v.previousCount),
+      resolution: resolutionLine(v),
+    })),
+    withoutValue: b.withoutValue ? `${approx(b.estimated)}${b.withoutValue.toLocaleString('en-GB')} tickets have no ${b.label}.` : '',
+  }));
+
+  let timeOfDay = null;
+  if (report.timeOfDay?.analysed > 0) {
+    const { grid, timeZone } = report.timeOfDay;
+    const totals = grid.map((row) => row.reduce((a, n) => a + n, 0));
+    timeOfDay = {
+      timeZone,
+      grid,
+      busiestHours: peakText(hoursOf(grid)),
+      busiestDay: DAYS[totals.indexOf(Math.max(...totals))],
+      outOfHours: `${outOfHoursShare(grid)}%`,
+      channelField: report.timeOfDay.channelField || '',
+      channels: channelRows(report.timeOfDay.byChannel),
+    };
   }
 
-  // Volume chart.
-  const pts = model.chart?.points || [];
-  if (pts.length > 1) {
-    heading(model.chart.title || 'Tickets over time');
-    ensure(130);
-    const h = 100;
-    const max = Math.max(1, ...pts.map((p) => p.count));
-    const slot = W / pts.length;
-    const every = Math.max(1, Math.ceil(pts.length / 8));
-    doc.setDrawColor(...C.border); doc.line(PAGE.m, y + h, PAGE.m + W, y + h);
-    pts.forEach((p, i) => {
-      const bh = Math.max(1.5, (p.count / max) * (h - 6));
-      doc.setFillColor(...C.brand); doc.rect(PAGE.m + i * slot + slot * 0.18, y + h - bh, slot * 0.64, bh, 'F');
-      if (i % every === 0) { set(6.5, 'normal', C.faint); doc.text(pdfText(p.date.slice(5)), PAGE.m + i * slot + slot / 2, y + h + 10, { align: 'center' }); }
-    });
-    set(6.5, 'normal', C.faint); doc.text(String(max), PAGE.m - 4, y + 8, { align: 'right' });
-    y += h + 20;
-  }
+  const dataQuality = (report.dataQuality || []).filter((d) => d.problemCount > 0).map((d) => ({
+    label: d.label,
+    text: `${d.share}% of tickets (${approx(d.estimated)}${d.problemCount.toLocaleString('en-GB')}) have no real ${d.label}${d.placeholders.length ? `; placeholders: ${d.placeholders.slice(0, 4).map((p) => p.value).join(', ')}` : ''}.`,
+  }));
 
-  // Summary and next steps.
-  if (model.summary?.text) {
-    heading(model.summary.heading || 'Summary');
-    paragraph(model.summary.text, { size: 10 });
-    if (model.summary.note) paragraph(model.summary.note, { size: 8, colour: C.subtle });
-  }
-  if (model.actions?.length) {
-    heading('Next steps');
-    for (const a of model.actions) {
-      const ls = lines(a, W - 14, 10);
-      ls.forEach((l, i) => { ensure(13); set(10); if (!i) doc.text('•', PAGE.m + 2, y + 10); doc.text(l, PAGE.m + 14, y + 10); y += 13; });
-      y += 3;
-    }
-  }
-
-  // Categories: broad areas (AI), each with its biggest patterns.
-  if (model.categories?.length) {
-    heading('Issue categories');
-    for (const c of model.categories) {
-      const detail = lines(c.patterns || '', W - 150, 8);
-      ensure(24 + detail.length * 10);
-      doc.setDrawColor(...C.border); doc.line(PAGE.m, y, PAGE.m + W, y);
-      y += 6;
-      set(10.5, 'bold'); doc.text(lines(c.title, W - 150, 10.5)[0] || '', PAGE.m, y + 11);
-      set(8, 'normal', C.subtle); doc.text(pdfText(c.share || ''), PAGE.m + W - 100, y + 11, { align: 'right' });
-      set(11, 'bold'); doc.text(pdfText(String(c.count)), PAGE.m + W - 50, y + 11, { align: 'right' });
-      if (c.change) {
-        const [bg, fg] = c.change.kind === 'up' ? [C.upBg, C.up] : c.change.kind === 'down' ? [C.downBg, C.down] : [C.newBg, C.newText];
-        doc.setFillColor(...bg); doc.roundedRect(PAGE.m + W - 42, y + 2, 40, 13, 3, 3, 'F');
-        set(7.5, 'bold', fg); doc.text(pdfText(c.change.text), PAGE.m + W - 22, y + 11, { align: 'center' });
-      }
-      y += 16;
-      for (const l of detail) { set(8, 'normal', C.subtle); doc.text(l, PAGE.m, y + 8); y += 10; }
-      y += 4;
-    }
-  }
-
-  // Issues.
-  if (model.issues?.length) {
-    heading(`Recurring issues (${model.issues.length})`);
-    for (const issue of model.issues) {
-      const summaryLines = issue.summary ? lines(issue.summary, W - 240, 8.5) : [];
-      const metaText = [issue.when, issue.resolution].filter(Boolean).join('  ·  ');
-      const exampleCount = Math.min(3, issue.examples?.length || 0);
-      ensure(30 + summaryLines.length * 11 + (metaText ? 12 : 0) + exampleCount * 11);
-      doc.setDrawColor(...C.border); doc.line(PAGE.m, y, PAGE.m + W, y);
-      y += 6;
-      set(10.5, 'bold'); doc.text(lines(issue.title, W - 240, 10.5)[0] || '', PAGE.m, y + 11);
-      // Count, change lozenge and trend line on the right.
-      set(11, 'bold'); doc.text(pdfText(String(issue.count)), PAGE.m + W - 92, y + 11, { align: 'right' });
-      if (issue.change) {
-        const [bg, fg] = issue.change.kind === 'up' ? [C.upBg, C.up] : issue.change.kind === 'down' ? [C.downBg, C.down] : [C.newBg, C.newText];
-        doc.setFillColor(...bg); doc.roundedRect(PAGE.m + W - 84, y + 2, 40, 13, 3, 3, 'F');
-        set(7.5, 'bold', fg); doc.text(pdfText(issue.change.text), PAGE.m + W - 64, y + 11, { align: 'center' });
-      }
-      const t = (issue.trend || []).map((p) => p.count / (p.days || 1));
-      if (t.length > 1) {
-        const tmax = Math.max(...t) || 1;
-        const sx = PAGE.m + W - 225;
-        doc.setDrawColor(...C.brand); doc.setLineWidth(1.2);
-        for (let i = 1; i < t.length; i += 1) {
-          doc.line(sx + ((i - 1) / (t.length - 1)) * 80, y + 15 - (t[i - 1] / tmax) * 12, sx + (i / (t.length - 1)) * 80, y + 15 - (t[i] / tmax) * 12);
-        }
-        doc.setLineWidth(0.5);
-      }
-      y += 16;
-      for (const l of summaryLines) { set(8.5, 'normal', C.subtle); doc.text(l, PAGE.m, y + 8); y += 11; }
-      if (metaText) { set(8, 'normal', C.subtle); doc.text(lines(metaText, W, 8)[0], PAGE.m, y + 8); y += 12; }
-      for (const e of (issue.examples || []).slice(0, 3)) {
-        set(8, 'bold', C.brand); doc.text(pdfText(e.key), PAGE.m + 8, y + 8);
-        set(8, 'normal'); doc.text(lines(`${e.summary}${e.status ? `  (${e.status})` : ''}`, W - 80, 8)[0] || '', PAGE.m + 70, y + 8);
-        y += 11;
-      }
-      y += 6;
-    }
-  }
-
-  // Breakdowns.
-  for (const b of model.breakdowns || []) {
-    if (!b.values?.length) continue;
-    heading(`By ${b.label}`);
-    const top = Math.max(1, ...b.values.map((v) => v.count));
-    for (const v of b.values.slice(0, 8)) {
-      ensure(15);
-      set(9); doc.text(lines(v.value, 170, 9)[0] || '', PAGE.m, y + 9);
-      doc.setFillColor(...C.border); doc.rect(PAGE.m + 180, y + 3, W - 240, 6, 'F');
-      doc.setFillColor(...C.brand); doc.rect(PAGE.m + 180, y + 3, Math.max(2, (v.count / top) * (W - 240)), 6, 'F');
-      set(9, 'bold'); doc.text(pdfText(String(v.countText ?? v.count)), PAGE.m + W, y + 9, { align: 'right' });
-      y += 15;
-    }
-  }
-
-  // When tickets arrive.
-  const grid = model.timeOfDay?.grid;
-  if (grid?.length === 7 && grid.flat().some((n) => n > 0)) {
-    heading('When tickets arrive');
-    const peak = peakWindow(hoursOf(grid));
-    paragraph(`Times in ${model.timeOfDay.timeZone}.${peak ? ` Busiest 3 hours: ${windowText(peak)} (${peak.share}% of tickets).` : ''}`, { size: 9, colour: C.subtle });
-    ensure(7 * 13 + 20);
-    const cell = (W - 30) / 24;
-    const max = Math.max(1, ...grid.flat());
-    for (let h = 0; h < 24; h += 3) { set(6.5, 'normal', C.faint); doc.text(String(h).padStart(2, '0'), PAGE.m + 30 + h * cell, y + 7); }
-    y += 10;
-    grid.forEach((row, d) => {
-      set(7, 'normal', C.subtle); doc.text(DAYS[d], PAGE.m, y + 8);
-      row.forEach((n, h) => {
-        const k = n ? 0.15 + 0.85 * (n / max) : 0;
-        const mix = (a, b) => Math.round(a + (b - a) * k);
-        doc.setFillColor(...(n ? [mix(C.panel[0], C.brand[0]), mix(C.panel[1], C.brand[1]), mix(C.panel[2], C.brand[2])] : C.panel));
-        doc.rect(PAGE.m + 30 + h * cell + 0.5, y, cell - 1, 11, 'F');
-      });
-      y += 13;
-    });
-    y += 6;
-  }
-
-  if (model.footnote) { y += 6; paragraph(model.footnote, { size: 7.5, colour: C.faint }); }
-
-  // Page numbers.
-  const pages = doc.getNumberOfPages();
-  for (let p = 1; p <= pages; p += 1) {
-    doc.setPage(p);
-    set(7.5, 'normal', C.faint);
-    doc.text(pdfText(`${model.title} · ${model.subtitle}`), PAGE.m, PAGE.h - 22);
-    doc.text(`${p} / ${pages}`, PAGE.w - PAGE.m, PAGE.h - 22, { align: 'right' });
-  }
-  return doc;
+  return {
+    title: report.organization,
+    period: `${report.startDate} to ${report.endDate}`,
+    generated: generatedAt.toISOString().slice(0, 16).replace('T', ' ') + ' UTC',
+    notes,
+    kpis,
+    overview: ai?.overview || '',
+    actions: ai?.actions || [],
+    categories,
+    volume: { points: report.timeSeries || [], unit: (Date.parse(report.endDate) - Date.parse(report.startDate)) / 86400000 < 35 ? 'day' : 'week' },
+    issues,
+    moreIssues: Math.max(0, groups.length - PDF_ISSUES),
+    breakdowns,
+    timeOfDay,
+    dataQuality,
+  };
 }
 
-/** Builds and downloads the PDF (same way as the CSV export). */
-export function downloadReportPdf(model, filename) {
-  const blob = buildReportPdf(model).output('blob');
-  const link = document.createElement('a');
-  link.href = URL.createObjectURL(blob);
-  link.download = filename;
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+/**
+ * A published portal report (a snapshot from publish.js, as portalView returns
+ * it) as PDF sections. Only what the customer already sees on the page:
+ * example requests are ones shared with their organisation.
+ */
+export function portalPdfContent(snapshot, { generatedAt = new Date() } = {}) {
+  if (!snapshot?.organization) throw new Error('There is no report to download.');
+  const { totals, period } = snapshot;
+  const n = (value) => (value || 0).toLocaleString('en-GB');
+  const notes = [];
+  if (snapshot.live) notes.push(`Numbers updated ${String(snapshot.refreshedAt).slice(0, 10)}; summary written ${String(snapshot.summaryWrittenAt).slice(0, 10)}.`);
+  if (snapshot.patterns.some((p) => p.estimated) || snapshot.breakdowns?.some((b) => b.estimated)) notes.push('Counts marked ~ are estimates.');
+
+  const kpis = [
+    { label: 'Requests', value: n(totals.current), hint: 'in this period' },
+    { label: 'Vs previous period', value: totals.changePercent === null ? 'New baseline' : `${signed(totals.changePercent)}%`, hint: `previous ${n(totals.previous)}` },
+    { label: 'Common issues', value: String(snapshot.patterns.length) },
+  ];
+  if (snapshot.resolution?.medianHours !== null && snapshot.resolution?.medianHours !== undefined) {
+    kpis.push({ label: 'Typical time to resolve', value: duration(snapshot.resolution.medianHours), hint: snapshot.resolution.openShare ? `${snapshot.resolution.openShare}% still open` : 'all resolved' });
+  }
+
+  const issues = snapshot.patterns.slice(0, PDF_ISSUES).map((p, index) => ({
+    name: p.title,
+    count: `${approx(p.estimated)}${n(p.count)}`,
+    previous: `${approx(p.estimated && p.previousCount)}${n(p.previousCount)}`,
+    change: changeText(p.count, p.previousCount),
+    trend: p.trend?.length ? trendWord(p.trend) : (!p.previousCount ? 'New' : ''),
+    where: '',
+    resolution: resolutionLine(p),
+    peak: peakText(p.hours || []),
+    combines: null,
+    summary: p.summary || '',
+    examples: index < PDF_DETAILS ? (p.examples || []).slice(0, PDF_EXAMPLES).map((e) => ({ key: e.key, summary: e.summary, status: e.status })) : [],
+  }));
+
+  const breakdowns = (snapshot.breakdowns || []).filter((b) => b.values.length).map((b) => ({
+    label: b.label,
+    estimated: b.estimated,
+    values: b.values.map((v) => ({ value: v.value, count: `${approx(b.estimated)}${n(v.count)}`, change: changeText(v.count, v.previousCount), resolution: resolutionLine(v) })),
+    withoutValue: '',
+  }));
+
+  let timeOfDay = null;
+  const grid = snapshot.timeOfDay?.grid;
+  if (grid && grid.some((row) => row.some(Boolean))) {
+    const days = grid.map((row) => row.reduce((a, c) => a + c, 0));
+    timeOfDay = { timeZone: snapshot.timeOfDay.timeZone, grid, busiestHours: peakText(hoursOf(grid)), busiestDay: DAYS[days.indexOf(Math.max(...days))], outOfHours: `${outOfHoursShare(grid)}%`, channelField: snapshot.timeOfDay.channelField || '', channels: channelRows(snapshot.timeOfDay.byChannel) };
+  }
+
+  return {
+    noun: 'Request',
+    title: snapshot.organization.name,
+    period: `Service report · ${period.from} to ${period.to}`,
+    generated: generatedAt.toISOString().slice(0, 16).replace('T', ' ') + ' UTC',
+    notes,
+    kpis,
+    overview: snapshot.overview || '',
+    actions: snapshot.actions || [],
+    volume: { points: snapshot.timeSeries || [], unit: (Date.parse(period.to) - Date.parse(period.from)) / 86400000 < 35 ? 'day' : 'week' },
+    issues,
+    moreIssues: Math.max(0, snapshot.patterns.length - PDF_ISSUES),
+    breakdowns,
+    timeOfDay,
+    dataQuality: [],
+  };
+}
+
+/** "service-report-acme-2026-09-01-2026-09-30.pdf" */
+export function portalPdfFileName(snapshot) {
+  const who = String(snapshot.organization?.name || 'report').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  return `service-report-${who}-${snapshot.period.from}-${snapshot.period.to}.pdf`;
+}
+
+/** "customer-insights-acme-2026-09-01-2026-09-30.pdf" */
+export function pdfFileName(report) {
+  const who = (report.organizations?.length > 1 ? `${report.organizations.length}-organisations` : report.organization || 'report')
+    .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  return `customer-insights-${who}-${report.startDate}-${report.endDate}.pdf`;
+}
+
+// jsPDF's built-in fonts only cover Windows-1252. Accents are kept where that
+// set has them; other letters lose their accent; anything else becomes "?".
+const CP1252_EXTRA = new Set('€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ');
+export function pdfSafe(text) {
+  return String(text ?? '')
+    .replace(/[≈]/g, '~').replace(/[→]/g, '->').replace(/[↑]/g, 'up ').replace(/[↓]/g, 'down ').replace(/[−]/g, '-')
+    .replace(/[  -​ ]/g, ' ')
+    .replace(/[^\n\x20-\x7E]/g, (ch) => {
+      if ((ch >= ' ' && ch <= 'ÿ') || CP1252_EXTRA.has(ch)) return ch;
+      const plain = ch.normalize('NFKD').replace(/[̀-ͯ]/g, '');
+      return /^[\x20-\x7E -ÿ]+$/.test(plain) ? plain : '?';
+    });
 }
