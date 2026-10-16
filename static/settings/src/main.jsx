@@ -6,17 +6,22 @@ import { createRoot } from 'react-dom/client';
 import { invoke, view } from '@forge/bridge';
 import '@nuvriqo/ui/css';
 import { enableTheme } from '@nuvriqo/ui/theme';
-import { ActionBar, AppHeader, Button, Card, Field, Footer, Loading, Notice } from '@nuvriqo/ui/react';
+import { ActionBar, AppHeader, Button, Card, Field, Footer, Loading, Notice, Tabs } from '@nuvriqo/ui/react';
 import { version } from '../../../package.json';
-import { ALERT_LIMITS, DEFAULT_ALERTS, DEFAULT_PLACEHOLDERS, DEFAULT_SYNONYMS, MAX_BREAKDOWNS, MAX_PLACEHOLDERS, MAX_WATCHED, MIN_PATTERN, SYNONYM_LIMITS } from '../../../src/settings.js';
+import { DEFAULT_INTERNAL_SYNONYMS, DEFAULT_SETTINGS, MAX_CLIENT_FIELDS, ALERT_LIMITS, DEFAULT_ALERTS, DEFAULT_PLACEHOLDERS, DEFAULT_SYNONYMS, MAX_BREAKDOWNS, MAX_PLACEHOLDERS, MAX_WATCHED, MIN_PATTERN, SYNONYM_LIMITS } from '../../../src/settings.js';
 import BackupRestore from './BackupRestore.jsx';
+import BreakdownFields from './BreakdownFields.jsx';
+import PatternSettings from './PatternSettings.jsx';
+import InternalSettings from './InternalSettings.jsx';
+import DeviceSettings from './DeviceSettings.jsx';
+import EmailReports from './EmailReports.jsx';
+import SurgeSettings from './SurgeSettings.jsx';
+import PdfLogos from './PdfLogos.jsx';
 import './styles.css';
 
 enableTheme(view);
 
 const PRODUCT = 'Customer Insights';
-// Saved lists show as "first = the rest"; text being edited is kept as typed.
-const synonymText = (value) => (Array.isArray(value) ? value.map((list) => `${list[0]} = ${list.slice(1).join(', ')}`).join('\n') : value);
 
 function App() {
   const [state, setState] = useState({ loading: true });
@@ -35,9 +40,9 @@ function App() {
   }, []);
 
   const dirty = draft && state.settings && JSON.stringify(draft) !== JSON.stringify(state.settings);
-  const fieldName = (id) => state.fields?.find((f) => f.id === id)?.name || '';
   const [orgFilter, setOrgFilter] = useState('');
   const [checkNote, setCheckNote] = useState('');
+  const [tab, setTab] = useState('customers');
   const alerts = { ...DEFAULT_ALERTS, ...draft?.alerts };
   const setAlerts = (change) => { setSaved(false); setDraft((d) => ({ ...d, alerts: { ...DEFAULT_ALERTS, ...d.alerts, ...change } })); };
   // Watched organisations first, then matches for the filter (at most 50 listed).
@@ -47,10 +52,6 @@ function App() {
     const others = (state.organizations || []).filter((o) => !watched.some((w) => w.id === o.id) && (!term || o.name.toLowerCase().includes(term)));
     return [...watched.filter((o) => !term || o.name.toLowerCase().includes(term)), ...others.slice(0, 50)];
   })();
-  const setBreakdown = (index, change) => {
-    setSaved(false);
-    setDraft((d) => ({ ...d, breakdowns: d.breakdowns.map((b, i) => (i === index ? { ...b, ...change } : b)) }));
-  };
 
   async function save() {
     setSaving(true); setError('');
@@ -70,60 +71,27 @@ function App() {
     {error && <Notice kind="error" title="Settings weren’t saved.">{error}</Notice>}
 
     {draft && <>
-      <Card title="Breakdown fields" description={`Reports show tickets and each issue split by these fields, for example base or device type. Up to ${MAX_BREAKDOWNS}.`}>
-        <div className="nq-stack">
-          {draft.breakdowns.map((b, index) => <div className="cs-row" key={index}>
-            <Field label="Field" htmlFor={`cs-field-${index}`}>
-              <select id={`cs-field-${index}`} className="nq-select" value={b.id}
-                onChange={(e) => setBreakdown(index, { id: e.target.value, label: fieldName(e.target.value) })}>
-                {state.fields.map((f) => <option key={f.id} value={f.id}
-                  disabled={f.id !== b.id && draft.breakdowns.some((x) => x.id === f.id)}>{f.name}</option>)}
-              </select>
-            </Field>
-            <Field label="Shown as" htmlFor={`cs-label-${index}`}>
-              <input id={`cs-label-${index}`} className="nq-input" maxLength={40} value={b.label} onChange={(e) => setBreakdown(index, { label: e.target.value })} />
-            </Field>
-            <label className="cs-check cs-portal" title="Customers see this breakdown in published portal reports">
-              <input type="checkbox" className="nq-check" checked={b.portal === true} onChange={(e) => setBreakdown(index, { portal: e.target.checked })} />
-              <span>Show on portal</span>
-            </label>
-            <Button appearance="subtle" small onClick={() => { setSaved(false); setDraft((d) => ({ ...d, breakdowns: d.breakdowns.filter((_, i) => i !== index) })); }}>Remove</Button>
-          </div>)}
-          {!draft.breakdowns.length && <p className="nq-muted">No breakdown fields yet. Reports still show patterns and trends.</p>}
-          {draft.breakdowns.length < MAX_BREAKDOWNS && state.fields.length > 0 && <div>
-            <Button small onClick={() => {
-              setSaved(false);
-              const next = state.fields.find((f) => !draft.breakdowns.some((b) => b.id === f.id));
-              if (next) setDraft((d) => ({ ...d, breakdowns: [...d.breakdowns, { id: next.id, label: next.name }] }));
-            }}>Add a field</Button>
-          </div>}
-          <p className="nq-muted">Only fields that hold choices can be used: select lists, checkboxes, radio buttons, cascading selects, labels, components, priority and request type.</p>
-        </div>
-      </Card>
+      <div className="cs-tabs"><Tabs items={[{ id: 'customers', label: 'Customers' }, { id: 'internal', label: 'Internal' }, { id: 'general', label: 'Backup' }]} active={tab} onChange={setTab} /></div>
 
-      <Card title="Patterns" description="How tickets are grouped into recurring issues.">
-        <Field label="Minimum tickets per pattern" htmlFor="cs-min-pattern"
-          help={`Between ${MIN_PATTERN.min} and ${MIN_PATTERN.max}. Higher numbers show fewer, more established issues. For large customers this counts tickets in the analysed sample.`}>
-          <input id="cs-min-pattern" className="nq-input cs-number" type="number" min={MIN_PATTERN.min} max={MIN_PATTERN.max} step={1}
-            value={draft.minPatternSize ?? MIN_PATTERN.default}
-            onChange={(e) => { setSaved(false); setDraft((d) => ({ ...d, minPatternSize: Number(e.target.value) })); }} />
-        </Field>
-        <Field label="Words that mean the same" htmlFor="cs-synonyms"
-          help={`One list per line, for example “pinpad = pin pad, card reader, payment terminal”. Tickets using any of them group together under the first word. Up to ${SYNONYM_LIMITS.groups} lines; capital letters, hyphens and plurals don’t matter.`}>
-          <textarea id="cs-synonyms" className="nq-textarea" rows={5}
-            value={synonymText(draft.synonyms ?? DEFAULT_SYNONYMS)}
-            onChange={(e) => { setSaved(false); setDraft((d) => ({ ...d, synonyms: e.target.value })); }} />
+      {tab === 'customers' && <>
+      <BreakdownFields id="cs-bd" title="Breakdown fields" showPortal fields={state.fields}
+        description={`Customer reports show tickets and each issue split by these fields, for example base or device type. Up to ${MAX_BREAKDOWNS}.`}
+        list={draft.breakdowns} onChange={(breakdowns) => { setSaved(false); setDraft((d) => ({ ...d, breakdowns })); }} />
+
+      <PatternSettings id="cs-cust" value={draft} onChange={(change) => { setSaved(false); setDraft((d) => ({ ...d, ...change })); }} />
+
+      <Card title="Contact channel" description="Split “when tickets arrive” by how tickets came in (for example Phone and Email), on reports, PDFs and the customer portal, so customers can see where peaks come from.">
+        <Field label="Channel field" htmlFor="cs-channel" help="A select field that records the contact channel, for example Issue Received by.">
+          <select id="cs-channel" className="nq-select" value={draft.channelField?.id || ''}
+            onChange={(e) => { const field = state.fields.find((x) => x.id === e.target.value); setSaved(false); setDraft((d) => ({ ...d, channelField: field ? { id: field.id, name: field.name, kind: field.kind } : null })); }}>
+            <option value="">Off</option>
+            {state.fields.map((x) => <option key={x.id} value={x.id}>{x.name}</option>)}
+          </select>
         </Field>
       </Card>
 
-      <Card title="Data quality" description="Breakdown values that mean nobody filled the field in. Reports count them, with tickets that have no value, so you can track the clean-up.">
-        <Field label="Placeholder values" htmlFor="cs-placeholders"
-          help={`One per line or separated by commas, up to ${MAX_PLACEHOLDERS}. Matching ignores capital letters and extra spaces.`}>
-          <textarea id="cs-placeholders" className="nq-textarea" rows={4}
-            value={Array.isArray(draft.placeholders) ? draft.placeholders.join('\n') : (draft.placeholders ?? DEFAULT_PLACEHOLDERS.join('\n'))}
-            onChange={(e) => { setSaved(false); setDraft((d) => ({ ...d, placeholders: e.target.value })); }} />
-        </Field>
-      </Card>
+      <DeviceSettings value={draft.devices} idChoices={state.idChoices || []} fields={state.fields} organizations={state.organizations || []}
+        onChange={(devices) => { setSaved(false); setDraft((d) => ({ ...d, devices })); }} />
 
       <Card title="Spike alerts" description="Once a day, compare each watched organisation’s last 7 days with the 7 before. Patterns that jump show as alerts in Customer Insights.">
         <div className="nq-stack">
@@ -186,6 +154,9 @@ function App() {
         </div>
       </Card>
 
+      <SurgeSettings value={draft.surge} organizations={state.organizations || []} breakdowns={state.settings.breakdowns} fields={state.fields || []}
+        onChange={(surge) => { setSaved(false); setDraft((d) => ({ ...d, surge })); }} />
+
       <Card title="Customer portal" description="Let Jira admins and project admins publish reviewed reports that customers see under “Service report” in the portal.">
         <label className="cs-check">
           <input type="checkbox" className="nq-check" checked={draft.portalEnabled === true}
@@ -195,12 +166,23 @@ function App() {
         <p className="nq-muted">Off by default. While it’s off, “Service report” in the portal menu tells customers reports aren’t available, and nothing is published.</p>
       </Card>
 
+      <PdfLogos invoke={invoke} organizations={state.organizations || []} />
+
+      <EmailReports invoke={invoke} organizations={state.organizations || []} />
+
+      </>}
+
+      {tab === 'internal' && <InternalSettings draft={draft} fields={state.fields} slaChoices={state.slaChoices || []} invoke={invoke}
+        update={(fn) => { setSaved(false); setDraft(fn); }} />}
+
       <ActionBar state={saving ? 'Saving…' : dirty ? 'Unsaved changes' : saved ? 'Saved' : ''}>
         <Button appearance="subtle" disabled={!dirty || saving} onClick={() => { setDraft(state.settings); setSaved(false); }}>Discard</Button>
         <Button appearance="primary" disabled={!dirty || saving} onClick={save}>Save</Button>
       </ActionBar>
 
+      {tab === 'general' && <>
       <BackupRestore invoke={invoke} app="Customer Insights" filePrefix="nuvriqo-customer-insights" />
+      </>}
     </>}
     <Footer product={PRODUCT} version={version} />
   </div>;

@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.6.0 (2026-10-16)
+
+Brought over from the internal edition (everything except crew numbers). **This is a major version** for installed sites: email reports add egress to Microsoft 365, so admins approve the update and the app is no longer eligible for Runs on Atlassian.
+
+- **Internal tab:** analyse your own projects instead of customer organisations, optionally by client (read from client fields an admin chooses). Settings have Customers, Internal and General tabs, and **settings per project** (own client fields, breakdowns, SLAs, patterns, escalation levels and handling statuses).
+- **Flow and workload:** created against resolved, backlog change, open tickets and their age, and a 4-week forecast. **Where the effort goes:** recurring issues ranked by time logged, or tickets × typical time to resolve.
+- **SLAs:** choose the service project SLA fields that matter; reports show met and breached, per issue and per breakdown value.
+- **Knowledge gaps:** check the knowledge base for the top 15 recurring issues and flag the ones with no matching article.
+- **Team performance:** resolved, typical time to resolve, SLA met and customer satisfaction for the team. On the Internal tab, Jira admins also see each agent, with **AHT** (time in progress while assigned) in minutes.
+- **Escalation levels** (Internal): the highest support level each ticket reached, with percentages and the time from created to 2nd level.
+- **When tickets arrive, by contact channel:** choose the channel field (for example Email, Phone, Portal); the heatmap has a button per channel, and the PDF draws a heatmap per channel so they can be compared.
+- **Devices affected:** choose the device ID and device type fields, and enter each organisation's **fleet sizes** per device type (Customers → Devices). Reports and surges show devices affected and the share of the fleet, with a suggested P1/P2 from admin thresholds. Agents decide the priority.
+- **Live surge detection** (off by default): every 5 minutes, watched organisations' latest tickets are grouped; a burst on one issue raises one "Possible incident" ticket in a chosen project, and later tickets are linked to it.
+- **PDF logos:** your logo and one per organisation, top left and right of the PDF.
+- **Email reports** (off until set up): connect a Microsoft 365 mailbox (tenant ID, app client ID, client secret, sender) and add weekly or monthly schedules, or send now, to internal staff and customer contacts. The PDF is built by the app and sent with Microsoft Graph. The client secret is kept as a Forge secret, never shown again and not in backups.
+- The app has its icon in the Jira sidebar.
+
 ## 1.5.0 (2026-10-09)
 
 - **AI categories:** "Summarise with AI" now also sorts the issues into a few broad categories (for example the point-of-sale app, payment devices, stock and products) with totals and change, and each category opens to its patterns. Switch between By category and All patterns. Categories are in the PDF and CSV, and the AI overview leads with them.

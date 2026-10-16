@@ -2,6 +2,7 @@
 // so modules that import this file still load in tests.
 import { reportKey } from './publish.js';
 import { DEFAULT_SETTINGS } from './settings.js';
+import { logoKey } from './logos.js';
 
 const kvs = async () => (await import('@forge/kvs')).kvs;
 
@@ -85,6 +86,101 @@ export async function saveAlertState(orgId, state) {
 
 export async function saveAlert(alert) {
   await (await kvs()).set(alertKey(alert.id), alert);
+}
+
+/** Merges a change into a stored alert (surges grow while they last). */
+export async function updateAlert(id, change) {
+  const alert = await loadAlert(id);
+  if (alert) await saveAlert({ ...alert, ...change });
+}
+
+// Email reports (src/email.js): the Microsoft 365 connection, its client secret
+// (a Forge secret: encrypted, never sent to a page, not in backups), the
+// schedules, each schedule's state, and the last 50 sends.
+const EMAIL_CONFIG_KEY = 'email-config';
+const EMAIL_SECRET_KEY = 'email-client-secret';
+const SCHEDULES_KEY = 'email-schedules';
+const EMAIL_LOG_KEY = 'email-log';
+const scheduleStateKey = (id) => `email-state:${String(id).replace(/[^a-z0-9-]/gi, '')}`;
+
+export async function loadEmailConfig() {
+  return (await (await kvs()).get(EMAIL_CONFIG_KEY)) || {};
+}
+
+export async function saveEmailConfig(config) {
+  await (await kvs()).set(EMAIL_CONFIG_KEY, config);
+}
+
+export async function loadEmailSecret() {
+  return (await (await kvs()).getSecret(EMAIL_SECRET_KEY)) || '';
+}
+
+export async function saveEmailSecret(secret) {
+  if (secret) await (await kvs()).setSecret(EMAIL_SECRET_KEY, secret);
+  else await (await kvs()).deleteSecret(EMAIL_SECRET_KEY);
+}
+
+export async function loadSchedules() {
+  return (await (await kvs()).get(SCHEDULES_KEY)) || [];
+}
+
+export async function saveSchedules(schedules) {
+  await (await kvs()).set(SCHEDULES_KEY, schedules);
+}
+
+export async function loadScheduleState(id) {
+  return (await (await kvs()).get(scheduleStateKey(id))) || {};
+}
+
+export async function updateScheduleState(id, change) {
+  const state = { ...(await loadScheduleState(id)), ...change };
+  await (await kvs()).set(scheduleStateKey(id), state);
+  return state;
+}
+
+export async function loadEmailLog() {
+  return (await (await kvs()).get(EMAIL_LOG_KEY)) || [];
+}
+
+export async function logEmail(entry) {
+  const log = [entry, ...(await loadEmailLog())].slice(0, 50);
+  await (await kvs()).set(EMAIL_LOG_KEY, log);
+}
+
+// PDF logos (src/logos.js): 'company', or an organisation id.
+export async function loadLogo(target) {
+  return (await (await kvs()).get(logoKey(target))) || null;
+}
+
+export async function saveLogo(target, logo) {
+  if (logo) await (await kvs()).set(logoKey(target), logo);
+  else await (await kvs()).delete(logoKey(target));
+}
+
+/** Every organisation logo: { orgId: logo }. */
+export async function listOrgLogos() {
+  const { kvs: store, WhereConditions } = await import('@forge/kvs');
+  const logos = {};
+  let cursor;
+  do {
+    let query = store.query().where('key', WhereConditions.beginsWith('logo:org:')).limit(20);
+    if (cursor) query = query.cursor(cursor);
+    const page = await query.getMany();
+    for (const { key, value } of page.results) logos[key.slice('logo:org:'.length)] = value;
+    cursor = page.nextCursor;
+  } while (cursor);
+  return logos;
+}
+
+// Live surge detection (src/surge.js): open surges per organisation.
+const surgeStateKey = (orgId) => `surge-state:${String(orgId).replace(/D/g, '')}`;
+
+export async function loadSurgeState(orgId) {
+  return (await (await kvs()).get(surgeStateKey(orgId))) || {};
+}
+
+export async function saveSurgeState(orgId, state) {
+  await (await kvs()).set(surgeStateKey(orgId), state);
 }
 
 export async function loadAlert(id) {

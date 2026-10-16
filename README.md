@@ -9,6 +9,11 @@ A Forge app that finds the recurring issues behind a customer organisation's tic
 - **AI summary** (optional, per run): Atlassian-hosted Claude through Forge LLMs merges patterns that are the same issue and writes names, an overview and next steps. Ticket text stays on the Atlassian platform.
 - **Breakdowns and data quality**: up to 5 admin-chosen fields (for example base or device type), with drill-down, and the share of tickets with no value or a placeholder such as "Unknown".
 - **Spike alerts** (off by default): once a day, watched organisations' last 7 days are compared with the 7 before. Jumps show in the app and, if an admin switches it on, as Jira tickets in a chosen project.
+- **Internal tab**: the same analysis for your own projects, optionally by client, with settings per project, escalation levels and per-agent team performance (Jira admins only).
+- **Flow, SLAs, knowledge gaps, team performance**: created against resolved and a forecast, SLA met and breached, top issues with no knowledge base article, and team totals with AHT.
+- **Contact channel and devices**: the heatmap per channel, and devices affected against each organisation's fleet sizes with a suggested P1/P2.
+- **Live surge detection** (off by default): every 5 minutes; one "Possible incident" ticket per surge.
+- **Email reports** (off until set up): weekly, monthly or send-now PDFs through the customer's own Microsoft 365 (Microsoft Graph).
 - **Customer portal** (off by default): an agent reviews names, summary and next steps and publishes. The app then builds the customer's report from that organisation's own tickets: counts, trends, time to resolve, recent requests linking to the portal, and the breakdowns an admin marks **Show on portal**. Customers only ever see reports for organisations they belong to.
 
 ## Settings
@@ -23,9 +28,11 @@ Jira settings → Apps → Customer Insights (Jira admins): breakdown fields and
 | `read:servicedesk-request` | Service desks, for portal request links |
 | `read:organization:jira-service-management` | Organisations, and which ones a portal customer belongs to |
 | `write:jira-work` | Only spike alert tickets, when an admin switches them on |
-| `storage:app` | Settings, published portal reports, alerts |
+| `storage:app` | Settings, published portal reports, alerts, logos, email schedules |
 
-Stored in Forge storage: settings, published portal reports (counts, trends, the agent's text, up to 5 example ticket keys and summaries per issue) and spike alerts (kept 30 days). No account ids are stored. Everything is deleted when the app is uninstalled.
+External fetch (email reports only): `login.microsoftonline.com` and `graph.microsoft.com`. Nothing is sent until an admin connects Microsoft 365. The client secret is a Forge secret.
+
+Stored in Forge storage: settings, published portal reports (counts, trends, the agent's text, up to 5 example ticket keys and summaries per issue), spike alerts (kept 30 days), surge state, PDF logos and email schedules (including the recipient addresses an admin enters). No account ids are stored. Everything is deleted when the app is uninstalled.
 
 ## Develop
 
@@ -49,6 +56,9 @@ src/engine.js           Search, sampling and the analysis run
 src/analysis.js         Grouping, trends, resolution time, breakdowns, data quality
 src/ai.js               Forge LLMs: merge, summary, live assignment
 src/alerts.js           Spike alerts
+src/surge.js, surgeJobs.js  Live surge detection (every 5 minutes)
+src/email.js, emailJobs.js, graph.js  Email report schedules and Microsoft Graph
+src/agents.js, escalation.js, sla.js, flow.js, channels.js, devices.js  Report sections
 src/live.js, liveJobs.js  Portal report builds and the hourly scheduler
 src/publish.js          Snapshot validation (what customers can receive)
 static/app|portal|settings  React UIs (Nuvriqo UI kit)
