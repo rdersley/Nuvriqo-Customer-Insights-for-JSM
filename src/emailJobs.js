@@ -2,10 +2,11 @@
 // analysis as the app, build the same PDF agents download, and send it through
 // Microsoft 365. Settings and schedules are admin-only (index.js).
 import { jsPDF } from 'jspdf';
-import { parseQuery, runAnalysis } from './engine.js';
+import { backlogFor, parseQuery, runAnalysis, satisfactionField } from './engine.js';
 import { analysisConfig } from './settings.js';
 import { applyMerges, categoriesOf } from './analysis.js';
 import { suggestCategories, suggestMerges, summarise } from './ai.js';
+import { healthOf } from './health.js';
 import { pdfContent, pdfFileName } from './pdfReport.js';
 import { buildPdf } from '../static/app/src/exportPdf.js';
 import { emailMessage, periodFor } from './email.js';
@@ -13,14 +14,14 @@ import { graphToken, sendMail } from './graph.js';
 import * as storage from './storage.js';
 
 /** The report, AI summary (optional) and PDF for a schedule, as the app. */
-export async function schedulePdf(schedule, settings, now = new Date()) {
+export async function schedulePdf(schedule, settings, now = new Date(), { internal = false } = {}) {
   const { from, to } = periodFor(schedule, now);
   const payload = { organization: schedule.organizations[0], organizations: schedule.organizations, startDate: from, endDate: to, timeZone: schedule.timeZone };
   const config = analysisConfig(settings, payload);
   const query = parseQuery(payload);
   const report = await runAnalysis(query, {
     breakdowns: settings.breakdowns || [], ...config.patterns, slaFields: config.slaFields, devices: settings.devices, channelField: settings.channelField || null,
-    mode: 'app', budgetMs: 240000,
+    satisfactionId: await satisfactionField('app'), mode: 'app', budgetMs: 240000,
   });
   let ai = null;
   if (schedule.ai && report.groups.length) {
@@ -31,7 +32,9 @@ export async function schedulePdf(schedule, settings, now = new Date()) {
     try { ai = { ...(await summarise({ ...report, groups, categories })), groups, categories }; } catch (error) { console.log(`email: AI summary skipped: ${error.message}`); }
   }
   const [company, customer] = await Promise.all([storage.loadLogo('company'), schedule.organizations.length === 1 ? storage.loadLogo(schedule.organizations[0].id) : null]);
-  const content = pdfContent({ report, groups: ai?.groups || report.groups, ai, generatedAt: now });
+  // The health score only goes to internal staff (a schedule with no customer recipients).
+  const health = internal ? healthOf(report, await backlogFor(query, 'app')) : null;
+  const content = pdfContent({ report, groups: ai?.groups || report.groups, ai, health, generatedAt: now });
   const doc = buildPdf(jsPDF, content, { product: 'Customer Insights', logos: { company, customer } });
   return {
     from, to,
@@ -51,7 +54,7 @@ export async function sendSchedule(scheduleId, { reason = 'schedule', slot = nul
   // A test goes only to the admin's address.
   const target = overrideTo ? { ...schedule, internal: [overrideTo], customers: [] } : schedule;
   try {
-    const pdf = await schedulePdf(schedule, settings, now);
+    const pdf = await schedulePdf(schedule, settings, now, { internal: target.customers.length === 0 });
     const token = await graphToken(emailConfig, secret);
     await sendMail(token, emailConfig.sender, emailMessage(target, pdf));
     const recipients = target.internal.length + target.customers.length;
