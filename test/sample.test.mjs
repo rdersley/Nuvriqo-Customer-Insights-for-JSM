@@ -111,6 +111,7 @@ test('sample data answers the agent page, settings and background jobs', async (
   for (const o of SAMPLE_ORGS) await checkHealth(o.id);
   const board = await call(handler, 'getHealthBoard');
   assert.equal(board.rows.length, 7);
+  assert.ok(board.rows.every((r) => r.history.length === 30 && r.change !== null), 'sample scores start with a month of history');
   assert.ok(board.rows.every((r) => r.score !== null), JSON.stringify(board.rows.map((r) => [r.organization.name, r.score, r.lastError])));
   if (process.env.SHOW_HEALTH) for (const r of board.rows) console.log(r.organization.name, r.score, r.signals.map((s) => `${s.key} ${s.score} (${s.detail})`).join(' | '));
   const ranked = [...board.rows].sort((a, b) => a.score - b.score);
