@@ -1,5 +1,5 @@
 import ResolverModule from '@forge/resolver';
-import { asUser, route } from '@forge/api';
+import { asUser, loadSampleState, route, sampleEnabled, saveSampleState } from './jira.js';
 import { textOf } from './analysis.js';
 import { countIssues, dateSlices, deviceFieldIds, filterFor, organisationsOf, parseQuery, pool, readJson, requestWithRetry, runAnalysis, satisfactionField, searchPage } from './engine.js';
 import { agentRows, handlingTimes, satisfactionFieldId, teamTotals } from './agents.js';
@@ -9,7 +9,7 @@ import { licenseAllows, UNLICENSED_MESSAGE } from './license.js';
 import { exportBackupPage, importBackupBatch } from './backup.js';
 import { suggestCategories, suggestMerges, summarise } from './ai.js';
 import { snapshotFrom } from './publish.js';
-import { deleteLive, deleteReport, listAlerts, listHealth, listOrgLogos, loadAlert, loadLiveConfig, loadLiveState, loadLogo, loadReport, loadSettings, saveAlert, saveLiveConfig, saveLogo, saveReport, saveSettings } from './storage.js';
+import { clearSampleData, deleteLive, deleteReport, listAlerts, listHealth, listOrgLogos, loadAlert, loadLiveConfig, loadLiveState, loadLogo, loadReport, loadSettings, saveAlert, saveLiveConfig, saveLogo, saveReport, saveSettings } from './storage.js';
 import { MAX_ORG_LOGOS, sanitizeLogo } from './logos.js';
 import { fleetFor } from './devices.js';
 import { isLive, liveConfigFrom } from './live.js';
@@ -59,7 +59,8 @@ async function listOrganizations() {
 // Unlicensed installs get the flag and nothing else, so the page can explain why.
 define('getOrganizations', async ({ context }) => {
   if (!licenseAllows(context)) return { licensed: false, organizations: [] };
-  return { licensed: true, organizations: await listOrganizations() };
+  const [organizations, sample] = await Promise.all([listOrganizations(), sampleEnabled()]);
+  return { licensed: true, organizations, sample };
 });
 
 // ---- Spike alerts (src/alerts.js) --------------------------------------------
@@ -525,6 +526,7 @@ define('deleteSchedule', async ({ payload, context }) => {
 // "Send now" to the schedule's recipients, or a test to one address only.
 define('sendScheduleNow', async ({ payload, context }) => {
   await requireEmailAdmin(context);
+  if (await sampleEnabled()) throw new Error('Emails are paused while sample data is on. Turn it off in settings (General) to send.');
   const id = String(payload?.id ?? '');
   if (!(await loadSchedules()).some((s) => s.id === id)) throw new Error('That schedule wasn’t found. Save it first.');
   const [to] = payload?.testTo ? emailList(payload.testTo) : [];
@@ -763,7 +765,31 @@ define('getSettings', async ({ context }) => {
     slaChoices,
     idChoices,
     organizations,
+    sample: await loadSampleState(),
   };
+});
+
+// Sample data (src/sample.js): a made-up IT support company with seven client
+// organisations, answered in place of Jira for the agent page, settings and
+// background jobs (never the portal). Real settings and data are untouched.
+// Jira admins only.
+define('setSampleData', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  if (!(await isJiraAdmin())) throw new Error('Only Jira admins can switch sample data on or off.');
+  const enabled = payload?.enabled === true;
+  const { SAMPLE_ORG_IDS } = await import('./sample.js');
+  if (enabled) {
+    await saveSampleState({ enabled: true, since: new Date().toISOString() });
+    // Work out the sample health scores and spike checks straight away.
+    const settings = await loadSettings();
+    for (const organization of settings.health.organizations) await queueHealth(organization.id);
+    for (const organization of settings.alerts.organizations) await queueAlertCheck(organization.id);
+  } else {
+    await saveSampleState({ enabled: false });
+    await clearSampleData(SAMPLE_ORG_IDS);
+  }
+  console.log(`setSampleData: ${enabled ? 'on' : 'off'}`);
+  return { enabled };
 });
 
 define('saveSettings', async ({ payload, context }) => {

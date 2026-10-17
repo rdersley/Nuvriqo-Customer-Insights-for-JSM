@@ -3,7 +3,7 @@
 // becomes an alert agents see in the app and, if switched on, a Jira ticket.
 // Background jobs read Jira as the app; agents only see alerts for
 // organisations their own Jira access shows them (see index.js getAlerts).
-import { asApp, route } from '@forge/api';
+import { asApp, route } from './jira.js';
 import { changeText } from './alertText.js';
 import { parseQuery, readJson, requestWithRetry, runAnalysis } from './engine.js';
 

@@ -147,6 +147,8 @@ function App() {
   const [flowError, setFlowError] = useState('');
   // Customer health: the all-customers list, and whether the report's score goes in the PDF.
   const [healthBoard, setHealthBoard] = useState(null);
+  // Sample data (settings → General): a made-up IT support company instead of this site's tickets.
+  const [sample, setSample] = useState(false);
   const [healthInPdf, setHealthInPdf] = useState(true);
   // Team performance (agentPerformance), loaded after each analysis like flow.
   const [team, setTeam] = useState({ data: null, loading: false, error: '' });
@@ -163,6 +165,7 @@ function App() {
     invoke('getOrganizations').then((result) => {
       const list = result?.organizations || [];
       setLicensed(result?.licensed !== false);
+      setSample(result?.sample === true);
       setOrgs(list);
       if (list.length) setOrgIds([String(list[0].id)]);
       if (result?.licensed !== false) {
@@ -601,6 +604,7 @@ function App() {
       </>}
     />
 
+    {sample && <Notice kind="info" title="Sample data">You’re looking at a made-up IT support company and its client organisations, not this site’s tickets. A Jira admin can turn sample data off in Customer Insights settings (General).</Notice>}
     {!licensed && <Notice kind="warning" title="Customer Insights isn’t licensed on this site">
       Analysis is unavailable until the app has an active Marketplace licence. Ask a Jira admin to check it in Manage apps.
     </Notice>}

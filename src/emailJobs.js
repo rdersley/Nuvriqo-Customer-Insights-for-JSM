@@ -12,6 +12,7 @@ import { buildPdf } from '../static/app/src/exportPdf.js';
 import { emailMessage, periodFor } from './email.js';
 import { graphToken, sendMail } from './graph.js';
 import * as storage from './storage.js';
+import { sampleEnabled } from './jira.js';
 
 /** The report, AI summary (optional) and PDF for a schedule, as the app. */
 export async function schedulePdf(schedule, settings, now = new Date(), { internal = false } = {}) {
@@ -50,6 +51,7 @@ export async function sendSchedule(scheduleId, { reason = 'schedule', slot = nul
   const [settings, schedules, emailConfig, secret] = await Promise.all([storage.loadSettings(), storage.loadSchedules(), storage.loadEmailConfig(), storage.loadEmailSecret()]);
   const schedule = schedules.find((s) => s.id === scheduleId);
   if (!schedule) return { skipped: 'no schedule' };
+  if (await sampleEnabled()) { console.log(`email: ${scheduleId} not sent, sample data is on`); return { skipped: 'sample data' }; }
   const startedAt = Date.now();
   // A test goes only to the admin's address.
   const target = overrideTo ? { ...schedule, internal: [overrideTo], customers: [] } : schedule;

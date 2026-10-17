@@ -6,7 +6,7 @@
 // ticket in it is one shared with that organisation, which its members can
 // already open in the portal. The portal resolver (portal.js) checks the
 // viewer belongs to the organisation on every request.
-import { asApp, route } from '@forge/api';
+import { asApp, route, sampleEnabled } from './jira.js';
 import { readJson, runAnalysis, parseQuery } from './engine.js';
 import { assignToApproved } from './ai.js';
 import { assignByWords, isDue, liveCounts, livePeriod, refreshedSnapshotInput } from './live.js';
@@ -98,8 +98,12 @@ export async function refreshLiveReport(orgId) {
 
 export const scheduler = async () => {
   const configs = await listLiveConfigs();
+  // Sample data on: only the sample organisations' reports refresh (and the other way round).
+  const sample = await sampleEnabled();
+  const { SAMPLE_ORG_IDS } = await import('./sample.js');
   let queued = 0;
   for (const config of configs) {
+    if (SAMPLE_ORG_IDS.has(String(config.organization.id)) !== sample) continue;
     const state = await loadLiveState(config.organization.id);
     if (isDue(config, state)) { await queueRefresh(config.organization.id, 'schedule'); queued += 1; }
   }
@@ -144,6 +148,7 @@ export async function queueEmail(scheduleId, { reason = 'schedule', slot = null,
 
 /** Queues email schedules whose latest slot hasn't been sent. */
 async function scheduleEmails() {
+  if (await sampleEnabled()) return; // never email sample data
   const schedules = await storage.loadSchedules();
   let queued = 0;
   const now = new Date();

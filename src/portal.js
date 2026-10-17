@@ -29,7 +29,7 @@ async function organisationsOf(accountId) {
 
 async function available(context) {
   if (!licenseAllows(context)) return false;
-  return (await loadSettings()).portalEnabled === true;
+  return (await loadSettings({ real: true })).portalEnabled === true;
 }
 
 const viewer = (context) => (context?.accountId && context.accountId !== 'unidentified' ? context.accountId : null);

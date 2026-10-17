@@ -1,6 +1,6 @@
 // The analysis engine, shared by the agent page (Jira read as the user) and
 // live portal reports (read as the app, in a queued background job).
-import { asApp, asUser, route } from '@forge/api';
+import { asApp, asUser, route } from './jira.js';
 import { buildReport, chartBuckets } from './analysis.js';
 import { breakdownFieldIds, dimensionsOf, jqlClause } from './settings.js';
 import { validTimeZone } from './timeOfDay.js';
