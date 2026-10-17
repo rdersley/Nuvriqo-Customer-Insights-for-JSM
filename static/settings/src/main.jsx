@@ -10,12 +10,14 @@ import { ActionBar, AppHeader, Button, Card, Field, Footer, Loading, Notice, Tab
 import { version } from '../../../package.json';
 import { DEFAULT_INTERNAL_SYNONYMS, DEFAULT_SETTINGS, MAX_CLIENT_FIELDS, ALERT_LIMITS, DEFAULT_ALERTS, DEFAULT_PLACEHOLDERS, DEFAULT_SYNONYMS, MAX_BREAKDOWNS, MAX_PLACEHOLDERS, MAX_WATCHED, MIN_PATTERN, SYNONYM_LIMITS } from '../../../src/settings.js';
 import BackupRestore from './BackupRestore.jsx';
+import SampleData from './SampleData.jsx';
 import BreakdownFields from './BreakdownFields.jsx';
 import PatternSettings from './PatternSettings.jsx';
 import InternalSettings from './InternalSettings.jsx';
 import DeviceSettings from './DeviceSettings.jsx';
 import EmailReports from './EmailReports.jsx';
 import SurgeSettings from './SurgeSettings.jsx';
+import HealthSettings from './HealthSettings.jsx';
 import PdfLogos from './PdfLogos.jsx';
 import './styles.css';
 
@@ -30,14 +32,15 @@ function App() {
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
 
-  useEffect(() => {
-    invoke('getSettings')
-      .then((result) => {
-        setState({ loading: false, ...result });
-        if (result.isAdmin) setDraft(result.settings);
-      })
-      .catch((e) => setState({ loading: false, error: e.message || 'Settings could not be loaded.' }));
-  }, []);
+  // Reloaded after sample data is switched, since the settings shown change with it.
+  const load = () => invoke('getSettings')
+    .then((result) => {
+      setState({ loading: false, ...result });
+      if (result.isAdmin) setDraft(result.settings);
+      setSaved(false);
+    })
+    .catch((e) => setState({ loading: false, error: e.message || 'Settings could not be loaded.' }));
+  useEffect(() => { load(); }, []);
 
   const dirty = draft && state.settings && JSON.stringify(draft) !== JSON.stringify(state.settings);
   const [orgFilter, setOrgFilter] = useState('');
@@ -69,9 +72,10 @@ function App() {
     {state.error && <Notice kind="error" title="Something went wrong.">{state.error}</Notice>}
     {state.isAdmin === false && <Notice kind="warning">Only Jira admins can change Customer Insights settings.</Notice>}
     {error && <Notice kind="error" title="Settings weren’t saved.">{error}</Notice>}
+    {state.sample?.enabled && <Notice kind="info" title="Sample data is on.">These are the sample settings. Your real settings come back when you turn sample data off (General tab).</Notice>}
 
     {draft && <>
-      <div className="cs-tabs"><Tabs items={[{ id: 'customers', label: 'Customers' }, { id: 'internal', label: 'Internal' }, { id: 'general', label: 'Backup' }]} active={tab} onChange={setTab} /></div>
+      <div className="cs-tabs"><Tabs items={[{ id: 'customers', label: 'Customers' }, { id: 'internal', label: 'Internal' }, { id: 'general', label: 'General' }]} active={tab} onChange={setTab} /></div>
 
       {tab === 'customers' && <>
       <BreakdownFields id="cs-bd" title="Breakdown fields" showPortal fields={state.fields}
@@ -157,6 +161,9 @@ function App() {
       <SurgeSettings value={draft.surge} organizations={state.organizations || []} breakdowns={state.settings.breakdowns} fields={state.fields || []}
         onChange={(surge) => { setSaved(false); setDraft((d) => ({ ...d, surge })); }} />
 
+      <HealthSettings value={draft.health} organizations={state.organizations || []} canRefresh={!dirty && Boolean(state.settings?.health?.enabled)}
+        onChange={(health) => { setSaved(false); setDraft((d) => ({ ...d, health })); }} />
+
       <Card title="Customer portal" description="Let Jira admins and project admins publish reviewed reports that customers see under “Service report” in the portal.">
         <label className="cs-check">
           <input type="checkbox" className="nq-check" checked={draft.portalEnabled === true}
@@ -181,6 +188,7 @@ function App() {
       </ActionBar>
 
       {tab === 'general' && <>
+      <SampleData state={state.sample} invoke={invoke} onChanged={load} />
       <BackupRestore invoke={invoke} app="Customer Insights" filePrefix="nuvriqo-customer-insights" />
       </>}
     </>}

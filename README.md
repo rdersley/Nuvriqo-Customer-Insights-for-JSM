@@ -14,6 +14,8 @@ A Forge app that finds the recurring issues behind a customer organisation's tic
 - **Contact channel and devices**: the heatmap per channel, and devices affected against each organisation's fleet sizes with a suggested P1/P2.
 - **Live surge detection** (off by default): every 5 minutes; one "Possible incident" ticket per surge.
 - **Email reports** (off until set up): weekly, monthly or send-now PDFs through the customer's own Microsoft 365 (Microsoft Graph).
+- **Customer health**: a 0–100 score per customer from volume, rising issues, SLAs, aged backlog and satisfaction, on each customer report and, for organisations an admin lists, ranked on the main page once a day. Internal only.
+- **Sample data** (Settings → General): a made-up IT support company with seven clients, answered in place of Jira (src/sample.js, src/jira.js) to try or demo every screen. Never shown on the portal; emails paused.
 - **Customer portal** (off by default): an agent reviews names, summary and next steps and publishes. The app then builds the customer's report from that organisation's own tickets: counts, trends, time to resolve, recent requests linking to the portal, and the breakdowns an admin marks **Show on portal**. Customers only ever see reports for organisations they belong to.
 
 ## Settings
@@ -56,6 +58,8 @@ src/engine.js           Search, sampling and the analysis run
 src/analysis.js         Grouping, trends, resolution time, breakdowns, data quality
 src/ai.js               Forge LLMs: merge, summary, live assignment
 src/alerts.js           Spike alerts
+src/health.js, healthJobs.js  Customer health score and the daily all-customers list
+src/sample.js, jira.js  Sample data mode: generated tickets and the Jira stand-in
 src/surge.js, surgeJobs.js  Live surge detection (every 5 minutes)
 src/email.js, emailJobs.js, graph.js  Email report schedules and Microsoft Graph
 src/agents.js, escalation.js, sla.js, flow.js, channels.js, devices.js  Report sections

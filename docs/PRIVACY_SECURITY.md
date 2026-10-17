@@ -15,6 +15,8 @@ Draft answers for the Marketplace Privacy & Security tab. The form ignores autom
   - Live surge state: per watched organisation, recent issue counts and the open incident ticket key.
   - PDF logos: images uploaded by a Jira admin.
   - Email reports: Microsoft 365 tenant ID, app client ID and sender mailbox; schedules (name, organisations, period, frequency, recipient email addresses, last sent). The client secret is in Forge secret storage, write-only from the UI and not included in backups.
+  - Customer health: per listed organisation, the latest score, its signals and 90 days of daily scores (numbers and issue counts only).
+  - Sample data: a switch, and the sample settings while it is on. Sample tickets are generated in memory, not stored.
   - Settings also hold project settings, SLA field ids, the contact-channel field, device fields and each organisation's fleet sizes (numbers only).
 - **Personal data:** the app stores no Atlassian account ids or display names. The only email addresses stored are the recipients a Jira admin types into email report schedules. Team performance reads assignees and display names for Jira admins when a report runs and does not store them. Ticket summaries can contain whatever customers typed, which may include names or codes; they are stored only in published reports (up to 5 per issue) and alerts (up to 3), and appear in emailed PDFs.
 - **Retention:** settings until changed; reports until an agent removes or replaces them; alerts 30 days. All app storage is deleted by Atlassian when the app is uninstalled, following the Forge data lifecycle.

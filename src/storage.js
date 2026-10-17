@@ -3,6 +3,7 @@
 import { reportKey } from './publish.js';
 import { DEFAULT_SETTINGS } from './settings.js';
 import { logoKey } from './logos.js';
+import { sampleEnabled } from './jira.js';
 
 const kvs = async () => (await import('@forge/kvs')).kvs;
 
@@ -62,14 +63,35 @@ export async function listLiveConfigs() {
 }
 
 const SETTINGS_KEY = 'app-settings';
+// While sample data is on, settings are kept apart so the real ones are untouched.
+const SAMPLE_SETTINGS_KEY = 'app-settings-sample';
 
-export async function loadSettings() {
+/** The site's settings, or the sample ones while sample data is on (unless `real`). */
+export async function loadSettings({ real = false } = {}) {
+  if (!real && await sampleEnabled()) {
+    const stored = await (await kvs()).get(SAMPLE_SETTINGS_KEY);
+    return { ...DEFAULT_SETTINGS, ...(stored || await defaultSampleSettings()) };
+  }
   return { ...DEFAULT_SETTINGS, ...((await (await kvs()).get(SETTINGS_KEY)) || {}) };
 }
 
 export async function saveSettings(settings) {
-  await (await kvs()).set(SETTINGS_KEY, settings);
+  await (await kvs()).set(await sampleEnabled() ? SAMPLE_SETTINGS_KEY : SETTINGS_KEY, settings);
   return settings;
+}
+
+/** Sample settings as first set up: every feature on for the sample customers. */
+export async function defaultSampleSettings() {
+  const { SAMPLE_FIELD_LIST, SAMPLE_ORGS, sampleSettingsInput } = await import('./sample.js');
+  const { sanitizeSettings, selectableFields } = await import('./settings.js');
+  const { slaFieldChoices } = await import('./sla.js');
+  const { deviceIdChoices } = await import('./devices.js');
+  return sanitizeSettings(sampleSettingsInput(), selectableFields(SAMPLE_FIELD_LIST), SAMPLE_ORGS.map(({ id, name }) => ({ id, name })),
+    { slaChoices: slaFieldChoices(SAMPLE_FIELD_LIST), idChoices: deviceIdChoices(SAMPLE_FIELD_LIST) });
+}
+
+export async function resetSampleSettings() {
+  await (await kvs()).delete(SAMPLE_SETTINGS_KEY);
 }
 
 // Spike alerts (src/alerts.js): one key per alert, and per-organisation check state.
@@ -173,7 +195,7 @@ export async function listOrgLogos() {
 }
 
 // Live surge detection (src/surge.js): open surges per organisation.
-const surgeStateKey = (orgId) => `surge-state:${String(orgId).replace(/D/g, '')}`;
+const surgeStateKey = (orgId) => `surge-state:${String(orgId).replace(/\D/g, '')}`;
 
 export async function loadSurgeState(orgId) {
   return (await (await kvs()).get(surgeStateKey(orgId))) || {};
@@ -183,8 +205,48 @@ export async function saveSurgeState(orgId, state) {
   await (await kvs()).set(surgeStateKey(orgId), state);
 }
 
+// Customer health (src/healthJobs.js): the latest score per organisation, with its history.
+const healthKey = (orgId) => `health:${String(orgId).replace(/\D/g, '')}`;
+
+export async function loadHealth(orgId) {
+  return (await (await kvs()).get(healthKey(orgId))) || null;
+}
+
+export async function saveHealth(record) {
+  await (await kvs()).set(healthKey(record.organization.id), record);
+}
+
+export async function deleteHealth(orgId) {
+  await (await kvs()).delete(healthKey(orgId));
+}
+
+/** Every stored health record. */
+export async function listHealth() {
+  const { kvs: store, WhereConditions } = await import('@forge/kvs');
+  const records = [];
+  let cursor;
+  do {
+    let query = store.query().where('key', WhereConditions.beginsWith('health:')).limit(50);
+    if (cursor) query = query.cursor(cursor);
+    const page = await query.getMany();
+    records.push(...page.results.map((r) => r.value));
+    cursor = page.nextCursor;
+  } while (cursor);
+  return records;
+}
+
 export async function loadAlert(id) {
   return (await (await kvs()).get(alertKey(id))) || null;
+}
+
+/** Removes what sample data left behind: its alerts, scores, surge state, published reports and settings. */
+export async function clearSampleData(orgIds) {
+  const store = await kvs();
+  for (const alert of await listAlerts()) if (orgIds.has(String(alert.organization?.id))) await deleteAlert(alert.id);
+  for (const id of orgIds) {
+    await Promise.all([deleteHealth(id), store.delete(alertStateKey(id)), store.delete(surgeStateKey(id)), deleteLive(id), deleteReport(id)]);
+  }
+  await resetSampleSettings();
 }
 
 export async function deleteAlert(id) {

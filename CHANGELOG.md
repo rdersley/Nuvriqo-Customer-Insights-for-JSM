@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.7.0 (2026-10-17)
+
+- **Customer health score:** a 0–100 score (Healthy 75+, Watch 50–74, At risk under 50) from ticket volume against the previous period (20%), share of tickets in rising or new issues (20%), SLAs met (25%), open tickets over 30 days old (20%) and customer satisfaction (15%). Signals without enough data are left out and the rest weighted up. Every customer report shows it (and "Include in PDF"); Settings → Customers → Customer health lists up to 50 organisations, scored once a day and ranked on the main page with the 7-day change and trend. Emails with no customer recipients include it. Internal only: never on the portal or sent to customers.
+- **Sample data:** Settings → General → Turn on sample data. A made-up IT support company with seven client organisations and a year of tickets (sites, categories, contact channels, devices and fleets, SLAs, satisfaction, escalations, a live surge) answers every screen in place of Jira, so the app can be tried before setting anything up. Sample settings are kept apart from the real ones; emails are paused, tickets can't be created and the customer portal is unaffected. Turning it off removes the sample alerts, scores and reports.
+- Reports read the satisfaction (CSAT) rating with the tickets.
+
 ## 1.6.0 (2026-10-16)
 
 Brought over from the internal edition (everything except crew numbers). **This is a major version** for installed sites: email reports add egress to Microsoft 365, so admins approve the update and the app is no longer eligible for Runs on Atlassian.

@@ -1,7 +1,7 @@
 // Forge handler for live surge detection (src/surge.js): every five minutes,
 // checks each watched organisation's tickets from the admin's window. Reads and
 // writes Jira as the app, like the other background jobs.
-import { asApp, route } from '@forge/api';
+import { asApp, route } from './jira.js';
 import { countIssues, pool, readJson, requestWithRetry, searchPage } from './engine.js';
 import { relatesLinkType } from './problem.js';
 import { checkSurges } from './surge.js';
