@@ -127,6 +127,7 @@ const STATUSES = [
   { id: '90103', name: 'Escalated to 2nd Line', statusCategory: { key: 'indeterminate' } },
   { id: '90104', name: 'With 3rd Line', statusCategory: { key: 'indeterminate' } },
   { id: '90105', name: 'Waiting for customer', statusCategory: { key: 'indeterminate' } },
+  { id: '90108', name: 'Waiting for support', statusCategory: { key: 'indeterminate' } },
   { id: '90106', name: 'Resolved', statusCategory: { key: 'done' } },
   { id: '90107', name: 'Closed', statusCategory: { key: 'done' } },
 ];
@@ -298,15 +299,23 @@ function historyOf(t, now) {
   const change = (at, items) => { if (at <= now) out.push({ id: `${t.id}-${n += 1}`, created: Math.round(at), author: { accountId: AGENTS[0].accountId, displayName: AGENTS[0].displayName }, items }); };
   const status = (from, to) => ({ fieldId: 'status', field: 'status', from: STATUS[from].id, fromString: from, to: STATUS[to].id, toString: to });
   const assignee = (from, to) => ({ fieldId: 'assignee', field: 'assignee', from: from?.accountId || null, fromString: from?.displayName || null, to: to.accountId, toString: to.displayName });
-  change(t.firstTouch, [assignee(null, t.agent1), status('Open', 'In Progress 1st Line')]);
-  let current = 'In Progress 1st Line';
-  if (t.waits && !t.t2) {
-    const wait = t.firstTouch + (t.resolvedAt - t.firstTouch) * 0.3;
-    change(wait, [status(current, 'Waiting for customer')]);
-    change(wait + (t.resolvedAt - wait) * 0.6, [status('Waiting for customer', current)]);
-  }
-  if (t.t2) { change(t.t2, [assignee(t.agent1, t.agent2), status(current, 'Escalated to 2nd Line')]); current = 'Escalated to 2nd Line'; }
-  if (t.t3) { change(t.t3, [assignee(t.agent2, AGENTS[7]), status(current, 'With 3rd Line')]); current = 'With 3rd Line'; }
+  // Agents work a ticket for minutes at each level; the rest of the time it waits
+  // (for support, or for the customer), so handling time (AHT) looks like real work.
+  const work = Math.max(5 * MIN, (t.handled || 1200) * 1000);
+  const levels = [['In Progress 1st Line', t.firstTouch], ...(t.t2 ? [['Escalated to 2nd Line', t.t2]] : []), ...(t.t3 ? [['With 3rd Line', t.t3]] : [])];
+  const owners = [t.agent1, t.agent2, AGENTS[7]];
+  let current = 'Open';
+  levels.forEach(([name, start], i) => {
+    const end = levels[i + 1]?.[1] ?? t.resolvedAt;
+    const share = work / levels.length;
+    change(start, [assignee(i ? owners[i - 1] : null, owners[i]), status(current, name)]);
+    current = name;
+    if (end - start > share * 1.5) {
+      const waiting = t.waits && i === levels.length - 1 ? 'Waiting for customer' : 'Waiting for support';
+      change(start + share * 0.7, [status(name, waiting)]);
+      change(end - share * 0.3, [status(waiting, name)]);
+    }
+  });
   change(t.resolvedAt, [status(current, 'Resolved')]);
   if (now - t.resolvedAt > 7 * DAY) change(t.resolvedAt + 7 * DAY, [status('Resolved', 'Closed')]);
   return out;
@@ -494,7 +503,7 @@ export async function fakeJira(route, init = {}, now = Date.now()) {
 export function sampleSettingsInput() {
   const all = SAMPLE_ORGS.map(({ id, name }) => ({ id, name }));
   return {
-    breakdowns: [{ id: F.site, label: 'Site', portal: true }, { id: F.category, label: 'Category', portal: true }, { id: F.deviceType, label: 'Device type' }],
+    breakdowns: [{ id: F.site, label: 'Site', portal: true }, { id: F.category, label: 'Category', portal: true }, { id: 'priority', label: 'Priority' }],
     internalBreakdowns: [{ id: F.category, label: 'Category' }, { id: 'priority', label: 'Priority' }],
     projectProfiles: [{
       id: 'p-sup-sample', name: 'Client Support', projects: ['SUP'],

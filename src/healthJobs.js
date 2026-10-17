@@ -6,6 +6,7 @@ import { backlogFor, parseQuery, runAnalysis, satisfactionField } from './engine
 import { analysisConfig } from './settings.js';
 import { addHistory, healthOf } from './health.js';
 import * as storage from './storage.js';
+import { sampleEnabled } from './jira.js';
 
 export const HEALTH_DAYS = 30;
 const RUN_FROM_HOUR = 5; // UTC: after the night's tickets, before the working day
@@ -45,6 +46,16 @@ export async function checkHealth(orgId, { now = new Date() } = {}) {
       satisfactionId, mode: 'app', budgetMs: 240000,
     });
     const health = healthOf(report, backlog);
+    // Sample data starts with a month of daily scores, so the trend and 7-day change show straight away.
+    let history = previous?.history || [];
+    if (history.length < 2 && await sampleEnabled()) {
+      for (let k = HEALTH_DAYS - 1; k >= 1; k -= 1) {
+        const past = healthPeriod(new Date(now.getTime() - k * 86400000));
+        const pastQuery = parseQuery({ organization, startDate: past.from, endDate: past.to });
+        const pastReport = await runAnalysis(pastQuery, { breakdowns: [], ...config.patterns, slaFields: config.slaFields, satisfactionId, mode: 'app', budgetMs: 20000 });
+        history = addHistory(history, day(new Date(now.getTime() - k * 86400000)), healthOf(pastReport, backlog).score);
+      }
+    }
     const record = {
       organization,
       date: day(now),
@@ -57,7 +68,7 @@ export async function checkHealth(orgId, { now = new Date() } = {}) {
       kind: health.band?.kind || null,
       weakest: health.weakest,
       signals: health.signals.map(({ key, label, score, detail, share }) => ({ key, label, score, detail, share })),
-      history: addHistory(previous?.history, day(now), health.score),
+      history: addHistory(history, day(now), health.score),
       lastError: null,
       queuedAt: null,
     };
