@@ -13,38 +13,45 @@ Source for the Atlassian Marketplace listing. Keep it in step with the app (READ
 - **EULA:** Atlassian Marketplace standard (Bonterms), as Follow-Up Manager
 - **Support:** https://nuvriqo.atlassian.net/servicedesk/customer/portal/2 · support@nuvriqo.com
 - **Categories:** IT & helpdesk; Charts & diagramming / Reports (pick the closest two)
-- **Keywords:** customer insights, recurring issues, ticket trends, service review, customer report, root cause, problem management, JSM reporting, customer portal report, spike alert
+- **Listing:** live on the Marketplace since October 2026 (app 486431556, key com.nuvriqo.customer-insights). Edit at marketplace.atlassian.com/manage/apps/486431556 → public version → Details and Highlights. Listing edits are public.
+- **Keywords:** customer insights, recurring issues, ticket trends, service review, customer report, root cause, problem management, JSM reporting, customer portal report, spike alert, customer health score, SLA report
 
 ## Summary (tagline, ≤ 120 characters)
 
-Find the recurring issues behind each customer's tickets, see what's changing and share a reviewed report in the portal.
+Find the issues behind each customer's tickets, see who needs attention and share a reviewed report.
 
 ## More details (250–1000 characters)
 
-Customer Insights shows service teams what a customer's tickets are really about. Pick an organisation and a period: similar requests are grouped into recurring issues, each with its count, change on the previous period, trend, time to resolve and example tickets. Atlassian-hosted AI can merge issues that are the same problem and write a plain-English summary with next steps for an account review.
+Customer Insights shows service teams what each customer's tickets are really about. Pick an organisation and a period: similar requests are grouped into recurring issues with counts, trends, time to resolve and example tickets. Atlassian-hosted AI merges duplicates, sorts them into categories and writes a summary with next steps.
 
-Break issues down by your own fields, such as base or device type, and drill in. A data-quality view shows how often those fields are left empty or set to "Unknown". Daily spike alerts flag issues that jump for the customers you watch, optionally as Jira tickets.
+A daily health score ranks every customer from Healthy to At risk, from volume, rising issues, SLAs, aged backlog and satisfaction. Spike alerts and live surge detection flag problems early, with devices affected and a suggested priority.
 
-When you're ready, publish a reviewed report to the customer portal. Each organisation sees only its own report, kept up to date daily or weekly. Everything runs on Atlassian; the only outside connection is your own Microsoft 365, if you choose to email reports.
+Break reports down by your own fields, see when tickets arrive by channel, check SLAs and knowledge gaps, and review your own team on the Internal tab. Share a branded PDF, email it on a schedule through your Microsoft 365, or publish a reviewed report to the customer portal.
 
-## Highlights (3)
+Try every screen first with built-in sample data.
+
+## Highlights (3; title ≤ 50, text ≤ 220 characters)
 
 1. **Recurring issues, not ticket lists**
-   Similar requests are grouped by their wording, ignoring ticket codes and templates. Each issue shows its count, trend, time to resolve and example tickets, with Open in Jira. AI can merge duplicates and name them.
-2. **Know what's changing**
-   Compare with the previous period, see New / Rising / Fading per issue, break down by your own fields, and get daily alerts when an issue spikes for a customer you watch.
-3. **Share it with the customer**
-   Publish a reviewed service report to the JSM portal. Customers see trends and recent requests for their own organisation only, and the numbers refresh daily or weekly.
+   Tickets that describe the same problem are grouped however they are worded. AI merges duplicates, sorts issues into categories and writes a plain-English summary with suggested follow-ups.
+2. **See which customers need attention**
+   A daily health score ranks every customer and shows the signal pulling it down. Spike alerts and live surge detection catch problems early, with devices affected and a suggested P1 or P2.
+3. **Share it, or try it first**
+   Send a branded PDF, email it on a schedule, or publish a reviewed report to the customer portal. Built-in sample data lets you try every screen before setting anything up.
 
-## Screenshots to capture (work site, then blur customer names)
+## Screenshots and video
 
-1. Analysis: KPIs, chart and the issue list with trend lines (Ryanair Crew style data, names blurred)
-2. An expanded issue: trend, time to resolve, example tickets
-3. AI summary card
-4. Breakdowns with drill-down, and the data-quality card
-5. Spike alerts card
-6. Customer portal report (sandbox)
-7. Settings page
+Capture with sample data on (Settings → General), so nothing needs blurring. The demo videos in `docs/videos/` (not in git) were made this way, showing only the app area.
+
+1. Customer health list with trend lines and the weakest signal
+2. Live surge card: devices affected and suggested priority
+3. A customer report: KPIs and the health card
+4. AI summary with categories, and an expanded issue with example tickets
+5. When tickets arrive by contact channel, and SLAs
+6. Internal tab: team performance and escalation levels
+7. Settings: sample data, devices with fleet sizes
+
+A Marketplace video needs a YouTube link: upload `nuvriqo-customer-insights-promo.mp4` (1:39) or the walkthrough (5:36) first.
 
 ## Documentation (publish before submitting)
 
@@ -52,6 +59,18 @@ When you're ready, publish a reviewed report to the customer portal. Each organi
 - Privacy policy URL: TBC (publish docs/PRIVACY_POLICY.md)
 - Security / vulnerability contact: support@nuvriqo.com, subject "Security — Customer Insights"
 
-## Release notes for the first public version (≤ 1000 characters)
+## Release notes (≤ 1000 characters)
+
+### 1.7.0 (production 6.0.0, October 2026)
+
+New in this version:
+- Customer health score: a daily 0-100 score per customer from volume, rising issues, SLAs, aged backlog and satisfaction, ranked on the main page and shown on every report (internal only).
+- Sample data: try every screen with a made-up IT support company before setting anything up. Nothing is written to Jira.
+- Internal tab with settings per project, team performance with handling time, and escalation levels.
+- SLAs, knowledge gaps, flow and workload with a 4-week forecast, and where the effort goes.
+- Arrival heatmaps by contact channel, devices affected against each customer's fleet, and live surge detection.
+- PDF logos, and scheduled email reports through your own Microsoft 365 (optional; this adds a connection to Microsoft 365, so admins approve the update).
+
+### First public version
 
 First Marketplace release. Recurring issues per customer organisation with trends, time to resolve and example tickets; optional AI merge and summary (Atlassian-hosted); breakdowns by your own fields with drill-down; data quality; daily spike alerts with optional Jira tickets; and reviewed reports for the customer portal, scoped to each organisation and kept up to date.
