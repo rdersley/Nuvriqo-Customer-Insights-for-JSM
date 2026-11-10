@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.8.0 (2026-11-10)
+
+- **Report filter:** on the analysis form (Customers and Internal), "Only tickets where *field* is / is not *value*" on any breakdown field, with value suggestions. For example, leave out history imported from another tool (a label or a Source field) so a migration doesn't look like a change in service. "Is not" keeps tickets with no value. It combines with drilling into a breakdown value.
+- **Compare two groups:** tick "Compare two groups side by side", choose a field and two values (or one value and everything else). The report shows both groups in columns: tickets, change, time to resolve, still open, SLAs met, satisfaction and their own top issues.
+- **Kept with the report:** a published portal report keeps the filter on every refresh, and the portal says which requests it covers ("requests where Source is not Imported"). Email schedules can have their own filter. PDFs note it.
+
 ## 1.7.0 (2026-10-17)
 
 - **Customer health score:** a 0–100 score (Healthy 75+, Watch 50–74, At risk under 50) from ticket volume against the previous period (20%), share of tickets in rising or new issues (20%), SLAs met (25%), open tickets over 30 days old (20%) and customer satisfaction (15%). Signals without enough data are left out and the rest weighted up. Every customer report shows it (and "Include in PDF"); Settings → Customers → Customer health lists up to 50 organisations, scored once a day and ranked on the main page with the 7-day change and trend. Emails with no customer recipients include it. Internal only: never on the portal or sent to customers.

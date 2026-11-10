@@ -103,6 +103,36 @@ test('sample data answers the agent page, settings and background jobs', async (
   assert.deepEqual(projects.projects.map((p) => p.key), ['SUP', 'INT']);
   assert.ok((await call(handler, 'suggestClients', { text: 'north' })).includes('Northgate Retail'));
 
+  // Report filter and compare: Category is not / is "Email & Microsoft 365".
+  const fields = await call(handler, 'getFilterFields');
+  assert.ok(fields.customers.some((x) => x.id === 'customfield_90002' && x.excludable));
+  assert.ok((await call(handler, 'suggestFilterValues', { id: 'customfield_90002', text: 'email' })).includes('Email & Microsoft 365'));
+  const category = { id: 'customfield_90002', value: 'Email & Microsoft 365' };
+  const harbourQuery = { organization: harbour, organizations: [harbour], ...period };
+  const without = await call(handler, 'analyze', { ...harbourQuery, reportFilter: { ...category, exclude: true } });
+  const only = await call(handler, 'analyze', { ...harbourQuery, filter: category });
+  assert.equal(without.currentCount + only.currentCount, report.currentCount);
+  assert.deepEqual(without.reportFilter, { id: 'customfield_90002', label: 'Category', value: 'Email & Microsoft 365', exclude: true });
+  assert.equal(without.filter, null);
+  assert.ok(!without.groups.some((g) => /outlook/i.test(g.theme)), 'the Outlook issue is in the excluded category');
+  // Published with the filter: kept for refreshes, and the portal says which requests it covers.
+  const published = await call(handler, 'publishReport', {
+    snapshot: { organization: { id: harbour.id }, period: { from: period.startDate, to: period.endDate }, totals: { current: without.currentCount, previous: without.previousCount }, timeSeries: without.timeSeries, patterns: without.groups.slice(0, 3).map((g) => ({ title: g.theme, count: g.count, previousCount: g.previousCount, include: true })), overview: '', actions: [] },
+    live: { schedule: 'weekly', preset: 'last-30' }, reportFilter: { ...category, exclude: true }, timeZone: 'UTC', projects: [],
+  });
+  assert.equal(published.filterNote, 'Category is not Email & Microsoft 365');
+  assert.deepEqual(store.get('live-config:9002').reportFilter, { id: 'customfield_90002', label: 'Category', value: 'Email & Microsoft 365', exclude: true });
+  const { refreshLiveReport } = await import('../src/liveJobs.js');
+  assert.deepEqual(await refreshLiveReport('9002'), { refreshed: true });
+  assert.equal(store.get('published-report:9002').filterNote, 'Category is not Email & Microsoft 365');
+  const { presetRange } = await import('../src/dates.js');
+  const live = presetRange('last-30', new Date());
+  const liveWithout = await call(handler, 'analyze', { ...harbourQuery, startDate: live.from, endDate: live.to, timeZone: 'UTC', reportFilter: { ...category, exclude: true } });
+  assert.equal(store.get('published-report:9002').totals.current, liveWithout.currentCount);
+  // Email schedules keep a report filter.
+  const { sanitizeSchedule } = await import('../src/email.js');
+  assert.deepEqual(sanitizeSchedule({ name: 'x', organizations: [harbour], internal: 'a@example.com', reportFilter: { ...category, exclude: true } }, [harbour]).reportFilter, { ...category, exclude: true });
+
   // Creating a problem is refused with sample data.
   await assert.rejects(call(handler, 'createProblem', { projectKey: 'SUP', issueTypeName: 'Problem', summary: 'Outlook', keys: [] }), /sample data/i);
 

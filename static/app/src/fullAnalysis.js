@@ -93,6 +93,7 @@ export async function analyseEveryTicket({ query, sampled, onProgress, isCancell
     breakdownFields: sampled.breakdownFields,
     baseJql: sampled.baseJql,
     filter: sampled.filter,
+    reportFilter: sampled.reportFilter || null,
     // Ratings come from the sampled run (the full fetch reads fewer fields).
     satisfaction: sampled.satisfaction || null,
     full: true,

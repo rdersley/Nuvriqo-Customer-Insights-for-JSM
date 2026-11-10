@@ -112,6 +112,8 @@ export function snapshotFrom(input, { now = new Date(), detailed = false } = {})
     patterns,
     overview: clip(input?.overview, 1500),
     actions: (Array.isArray(input?.actions) ? input.actions : []).map((a) => clip(a, 240)).filter(Boolean).slice(0, 5),
+    // Which requests the report covers when a report filter was used ("Source is not Imported").
+    filterNote: clip(input?.filterNote, 200),
     publishedAt: ISO_TIME.test(String(input?.publishedAt)) ? String(input.publishedAt) : now.toISOString(),
     // Live reports: the agent's summary keeps its date; numbers refresh.
     summaryWrittenAt: ISO_TIME.test(String(input?.summaryWrittenAt)) ? String(input.summaryWrittenAt) : now.toISOString(),

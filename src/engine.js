@@ -2,7 +2,7 @@
 // live portal reports (read as the app, in a queued background job).
 import { asApp, asUser, route } from './jira.js';
 import { buildReport, chartBuckets } from './analysis.js';
-import { breakdownFieldIds, dimensionsOf, jqlClause } from './settings.js';
+import { breakdownFieldIds, cleanFilter, dimensionsOf, EXCLUDABLE_KINDS, jqlClause, jqlEmptyClause } from './settings.js';
 import { validTimeZone } from './timeOfDay.js';
 import { satisfactionFieldId } from './agents.js';
 import { AGED_DAYS } from './health.js';
@@ -127,17 +127,33 @@ function escapeJql(value) {
   return value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
 }
 
-/**
- * A drill-down filter ({ id, value }) as JQL. Only configured breakdown fields
- * are accepted and the JQL is built here, never taken from the client.
- */
-export function filterFor(payloadFilter, breakdowns) {
-  if (!payloadFilter) return null;
-  const field = breakdowns.find((b) => b.id === String(payloadFilter.id));
-  const value = String(payloadFilter.value ?? '').slice(0, 120);
-  const clause = field && jqlClause(field, value);
+/** One filter ({ id, value, exclude }) on a configured breakdown field as JQL, or an error. */
+function filterPart(input, breakdowns) {
+  const f = cleanFilter(input);
+  if (!f) return null;
+  const field = breakdowns.find((b) => b.id === f.id);
+  const clause = field && jqlClause(field, f.value);
   if (!clause) throw new Error('That filter isn’t available. Check the breakdown fields in Customer Insights settings.');
-  return { id: field.id, label: field.label, value, clause };
+  if (!f.exclude) return { id: field.id, label: field.label, value: f.value, exclude: false, clause };
+  const empty = jqlEmptyClause(field);
+  if (!EXCLUDABLE_KINDS.includes(field.kind) || !empty) throw new Error(`${field.label} can’t be used with “is not”.`);
+  // "Is not" keeps tickets with no value too.
+  return { id: field.id, label: field.label, value: f.value, exclude: true, clause: `(${empty} OR ${clause.replace(/ = /, ' != ')})` };
+}
+
+/**
+ * The drill-down filter (a breakdown value clicked on the page) and the report
+ * filter (set on the form, a published report or an email schedule), as one
+ * JQL clause. Only configured breakdown fields are accepted and the JQL is
+ * built here, never taken from the client. `id`/`label`/`value`/`exclude` are
+ * the drill-down's; `report` is the report filter.
+ */
+export function filterFor(drillDown, breakdowns, reportFilter = null) {
+  const drill = filterPart(drillDown, breakdowns);
+  const report = filterPart(reportFilter, breakdowns);
+  if (!drill && !report) return null;
+  const strip = (p) => p && { id: p.id, label: p.label, value: p.value, exclude: p.exclude };
+  return { ...(drill ? strip(drill) : { id: null, label: null, value: null, exclude: false }), drill: strip(drill), report: strip(report), clause: [drill, report].filter(Boolean).map((p) => p.clause).join(' AND ') };
 }
 
 export const MAX_ORGANISATIONS = 10;
@@ -295,6 +311,8 @@ export async function runAnalysis(query, { breakdowns = [], minPatternSize, plac
     breakdownFields: breakdowns.map(({ id, label, kind }) => ({ id, label, kind })),
     // For "Open in Jira" links: the period's search, and any drill-down filter.
     baseJql: between(startDate, endExclusive),
-    filter: query.filter ? { id: query.filter.id, label: query.filter.label, value: query.filter.value } : null,
+    filter: query.filter?.drill || null,
+    // The report filter from the form, a published report or an email schedule.
+    reportFilter: query.filter?.report || null,
   };
 }

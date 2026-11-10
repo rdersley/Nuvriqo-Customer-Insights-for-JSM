@@ -257,6 +257,24 @@ const quote = (v) => `"${String(v).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"
 const SYSTEM_JQL = { components: 'component', priority: 'priority', issuetype: 'issuetype', resolution: 'resolution', labels: 'labels', project: 'project' };
 const cfOf = (id) => { const m = /^customfield_(\d+)$/.exec(String(id)); return m ? `cf[${m[1]}]` : null; };
 
+/** Field kinds a report filter can exclude a value of ("is not"). */
+export const EXCLUDABLE_KINDS = ['option', 'options', 'named', 'strings'];
+
+/** A report or drill-down filter as words: "Source is not Imported from ServiceNow". */
+export function filterText(f) {
+  return f ? `${f.label} ${f.exclude ? 'is not' : 'is'} ${f.value}` : '';
+}
+
+/**
+ * A report filter from a page or a schedule ({ id, value, exclude }), cleaned
+ * but not checked against the breakdown fields (filterFor does that when it runs).
+ */
+export function cleanFilter(input) {
+  const id = String(input?.id ?? '').slice(0, 60);
+  const value = String(input?.value ?? '').replace(/\s+/g, ' ').trim().slice(0, 120);
+  return id && value ? { id, value, exclude: input?.exclude === true } : null;
+}
+
 /** JQL for tickets with no value in breakdown field `b`, or null when it can't be searched. */
 export function jqlEmptyClause(b) {
   // Client: read from several fields (SD Client in one project, Client in others).

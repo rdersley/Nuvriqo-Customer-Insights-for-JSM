@@ -15,7 +15,7 @@ import { fleetFor } from './devices.js';
 import { isLive, liveConfigFrom } from './live.js';
 import { queueAlertCheck, queueEmail, queueHealth, queueRefresh } from './liveJobs.js';
 import { changeOver } from './health.js';
-import { allClientFields, analysisConfig, autoInternalBreakdowns, organisationBreakdown, sanitizeSettings, selectableFields } from './settings.js';
+import { allClientFields, analysisConfig, EXCLUDABLE_KINDS, filterText, autoInternalBreakdowns, organisationBreakdown, sanitizeSettings, selectableFields } from './settings.js';
 import { problemFields, problemRequest, relatesLinkType } from './problem.js';
 import { slaFieldChoices, slaState } from './sla.js';
 import { deviceIdChoices, deviceOf } from './devices.js';
@@ -166,7 +166,7 @@ define('fetchTickets', async ({ payload, context }) => {
   const breakdowns = await breakdownsFor(payload, settings);
   const { slaFields } = analysisConfig(settings, payload);
   // Clients are matched in every client field, whichever settings apply.
-  const query = parseQuery(payload, filterFor(payload?.filter, breakdowns), { clientFields: allClientFields(settings) });
+  const query = parseQuery(payload, filterFor(payload?.filter, breakdowns, payload?.reportFilter), { clientFields: allClientFields(settings) });
   const { from, toExclusive } = payload;
   if (!ISO_DATE.test(from || '') || !ISO_DATE.test(toExclusive || '') || from < query.previousStart || toExclusive > query.endExclusive || from >= toExclusive) {
     throw new Error('Invalid ticket range.');
@@ -210,7 +210,7 @@ define('analyze', async ({ payload, context }) => {
   const config = analysisConfig(settings, payload);
   const { minPatternSize, placeholders, synonyms } = config.patterns;
   const breakdowns = await breakdownsFor(payload, settings);
-  const query = parseQuery(payload, filterFor(payload?.filter, breakdowns), { clientFields: allClientFields(settings) });
+  const query = parseQuery(payload, filterFor(payload?.filter, breakdowns, payload?.reportFilter), { clientFields: allClientFields(settings) });
   // Resolvers are killed at 25s; runAnalysis stops starting new fetches after the budget.
   const satisfactionId = await satisfactionField('user');
   const report = await runAnalysis(query, { breakdowns, minPatternSize, placeholders, synonyms, slaFields: config.slaFields, devices: settings.devices, channelField: settings.channelField || null, satisfactionId, mode: 'user', budgetMs: FETCH_BUDGET_MS });
@@ -227,7 +227,7 @@ define('analyzeFlow', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
   const settings = await loadSettings();
   const breakdowns = await breakdownsFor(payload, settings);
-  const query = parseQuery(payload, filterFor(payload?.filter, breakdowns), { clientFields: allClientFields(settings) });
+  const query = parseQuery(payload, filterFor(payload?.filter, breakdowns, payload?.reportFilter), { clientFields: allClientFields(settings) });
   const deadline = Date.now() + FLOW_BUDGET_MS;
   const count = (jql) => (Date.now() > deadline ? Promise.resolve(null) : countIssues(jql, 'user'));
   const scope = query.scopeJql;
@@ -303,7 +303,7 @@ define('agentPerformance', async ({ payload, context }) => {
   const settings = await loadSettings();
   const config = analysisConfig(settings, payload);
   const breakdowns = await breakdownsFor(payload, settings);
-  const query = parseQuery(payload, filterFor(payload?.filter, breakdowns), { clientFields: allClientFields(settings) });
+  const query = parseQuery(payload, filterFor(payload?.filter, breakdowns, payload?.reportFilter), { clientFields: allClientFields(settings) });
   const deadline = Date.now() + AGENT_BUDGET_MS;
   const [admin, fieldList] = await Promise.all([
     isJiraAdmin(),
@@ -419,7 +419,7 @@ define('escalation', async ({ payload, context }) => {
   const config = analysisConfig(settings, payload);
   if (!config.escalation) return null;
   const breakdowns = await breakdownsFor(payload, settings);
-  const query = parseQuery(payload, filterFor(payload?.filter, breakdowns), { clientFields: allClientFields(settings) });
+  const query = parseQuery(payload, filterFor(payload?.filter, breakdowns, payload?.reportFilter), { clientFields: allClientFields(settings) });
   const deadline = Date.now() + 22000;
   const createdJql = (from, toExclusive) => query.between(from, toExclusive);
   const total = await countIssues(createdJql(query.startDate, query.endExclusive), 'user');
@@ -547,6 +547,30 @@ define('getProjects', async ({ context }) => {
   return { projects, clientFields: allClientFields(await loadSettings()).map((f) => ({ id: f.id, name: f.name })) };
 });
 
+// Values for the report filter: Jira's JQL autocomplete for one breakdown field.
+define('suggestFilterValues', async ({ payload, context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  const settings = await loadSettings();
+  const fields = [...(settings.breakdowns || []), ...(settings.internalBreakdowns || []), ...(settings.projectProfiles || []).flatMap((p) => p.breakdowns || [])];
+  const field = fields.find((b) => b.id === String(payload?.id ?? ''));
+  if (!field) return [];
+  const n = /^customfield_(\d+)$/.exec(field.id)?.[1];
+  const name = n ? `cf[${n}]` : { labels: 'labels', priority: 'priority', issuetype: 'issuetype', components: 'component' }[field.id];
+  if (!name) return [];
+  const text = String(payload?.text ?? '').slice(0, 60);
+  const response = await asUser().requestJira(route`/rest/api/3/jql/autocompletedata/suggestions?fieldName=${name}&fieldValue=${text}`, { headers: { Accept: 'application/json' } });
+  if (!response.ok) return [];
+  return [...new Set(((await response.json()).results || []).map((r) => String(r.value ?? '').replace(/^"|"$/g, '')).filter(Boolean))].slice(0, 30);
+});
+
+// Fields the report filter can use: the breakdown fields for customer reports and for internal ones.
+define('getFilterFields', async ({ context }) => {
+  if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
+  const settings = await loadSettings();
+  const list = (bs) => [...new Map((bs || []).filter((b) => !['organizations', 'client', 'requestType', 'cascading'].includes(b.kind)).map((b) => [b.id, { id: b.id, label: b.label, kind: b.kind, excludable: EXCLUDABLE_KINDS.includes(b.kind) }])).values()];
+  return { customers: list(settings.breakdowns), internal: list([...(settings.internalBreakdowns || []), ...(settings.projectProfiles || []).flatMap((p) => p.breakdowns || [])]) };
+});
+
 // Values for the client picker, from Jira's JQL autocomplete for each client field.
 define('suggestClients', async ({ payload, context }) => {
   if (!licenseAllows(context)) throw new Error(UNLICENSED_MESSAGE);
@@ -640,9 +664,13 @@ define('publishReport', async ({ payload, context }) => {
   if (!(await portalEnabled())) throw new Error('Portal reports are switched off on this site.');
   if (!(await canPublish())) throw new Error('Only Jira admins and project admins can publish to the portal.');
   const organization = await visibleOrganisation(payload?.snapshot?.organization?.id);
-  const snapshot = snapshotFrom({ ...payload.snapshot, organization });
+  // The report filter the agent analysed with; refreshes use it too. Checked against the breakdown fields.
+  const settings = await loadSettings();
+  const reportFilter = filterFor(null, settings.breakdowns || [], payload?.reportFilter)?.report || null;
+  const snapshot = snapshotFrom({ ...payload.snapshot, organization, filterNote: reportFilter ? filterText(reportFilter) : '' });
   const config = liveConfigFrom({
     ...payload?.live,
+    reportFilter,
     timeZone: payload?.timeZone,
     period: snapshot.period,
     approved: snapshot.patterns.filter((p) => p.title !== 'Other requests'),

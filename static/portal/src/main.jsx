@@ -148,7 +148,7 @@ function Report({ report, onRefresh, refreshNote }) {
     <div className="nq-spread cp-title">
       <div>
         <h2 className="nq-card__title">{report.organization.name}</h2>
-        <p className="nq-muted">{longDate(report.period.from)} – {longDate(report.period.to)}</p>
+        <p className="nq-muted">{longDate(report.period.from)} – {longDate(report.period.to)}{report.filterNote ? ` · requests where ${report.filterNote}` : ''}</p>
       </div>
       <div className="cp-updated">
         <span className="nq-muted">{report.live ? `Updated ${new Date(report.refreshedAt).toLocaleString()}` : `Published ${new Date(report.publishedAt).toLocaleDateString()}`}</span>
