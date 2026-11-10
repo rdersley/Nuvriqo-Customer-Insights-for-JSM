@@ -289,7 +289,7 @@ function App() {
       if (groups) {
         setComparison({ label: groups.label, loading: true });
         Promise.all([groups.a, groups.b].map((g) => invoke('analyze', { ...query, filter: { id: g.id, value: g.value, exclude: g.exclude } })))
-          .then(([a, b]) => setComparison({ label: groups.label, reportFilter: rf, a: { name: groups.a.name, report: a }, b: { name: groups.b.name, report: b } }))
+          .then(([a, b]) => setComparison({ label: groups.label, reportFilter: result.reportFilter, a: { name: groups.a.name, report: a }, b: { name: groups.b.name, report: b } }))
           .catch((e) => setComparison({ label: groups.label, error: e.message || 'The comparison couldn’t be run.' }));
       } else if (activeCompare(compare, fields)) {
         setComparison({ label: fields.find((f) => f.id === compare.id)?.label || 'Group', error: 'Enter a value for group B: this field can’t compare a value with everything else.' });

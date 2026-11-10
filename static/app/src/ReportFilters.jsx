@@ -68,7 +68,7 @@ export function FilterControls({ fields = [], filter, onFilter, compare, onCompa
       <Field label="Group A" htmlFor="ci-cmp-a">
         <ValueInput id="ci-cmp-a" invoke={invoke} fieldId={compare.id} value={compare.a} onChange={(a) => onCompare({ ...compare, a })} placeholder="e.g. Imported from ServiceNow" />
       </Field>
-      <Field label="Group B" htmlFor="ci-cmp-b" help={fields.find((f) => f.id === compare.id)?.excludable ? 'Leave empty for everything else.' : undefined}>
+      <Field label="Group B" htmlFor="ci-cmp-b">
         <ValueInput id="ci-cmp-b" invoke={invoke} fieldId={compare.id} value={compare.b} onChange={(b) => onCompare({ ...compare, b })} placeholder={fields.find((f) => f.id === compare.id)?.excludable ? 'Everything else' : 'Value'} />
       </Field>
     </div>}
