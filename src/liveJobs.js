@@ -7,7 +7,7 @@
 // already open in the portal. The portal resolver (portal.js) checks the
 // viewer belongs to the organisation on every request.
 import { asApp, route, sampleEnabled } from './jira.js';
-import { readJson, runAnalysis, parseQuery } from './engine.js';
+import { filterFor, readJson, runAnalysis, parseQuery } from './engine.js';
 import { assignToApproved } from './ai.js';
 import { assignByWords, isDue, liveCounts, livePeriod, refreshedSnapshotInput } from './live.js';
 import { snapshotFrom } from './publish.js';
@@ -68,8 +68,8 @@ export async function refreshLiveReport(orgId) {
   try {
     const config = { ...stored, organization: await currentOrganisation(orgId) };
     const { from, to } = livePeriod(config);
-    const query = parseQuery({ organization: config.organization, startDate: from, endDate: to, projects: config.projects, timeZone: config.timeZone });
     const { breakdowns, minPatternSize, placeholders, synonyms, channelField } = await loadSettings();
+    const query = parseQuery({ organization: config.organization, startDate: from, endDate: to, projects: config.projects, timeZone: config.timeZone }, filterFor(null, breakdowns || [], config.reportFilter));
     const report = await runAnalysis(query, { breakdowns, minPatternSize, placeholders, synonyms, channelField: channelField || null, mode: 'app', budgetMs: 240000 });
     let assignments;
     try {

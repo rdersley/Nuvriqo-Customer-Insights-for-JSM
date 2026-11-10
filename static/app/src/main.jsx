@@ -12,6 +12,8 @@ import { EffortCard, FlowCard, KnowledgeCard, SlaCard } from './WorkloadCards.js
 import TeamPerformance from './TeamPerformance.jsx';
 import EscalationCard from './EscalationCard.jsx';
 import { HealthBoard, HealthCard } from './HealthCards.jsx';
+import { activeCompare, activeFilter, compareGroups, CompareCard, FilterControls, NO_COMPARE, NO_FILTER } from './ReportFilters.jsx';
+import { filterText } from '../../../src/settings.js';
 import { healthOf } from '../../../src/health.js';
 import ChannelPicker, { useChannel } from './ChannelPicker.jsx';
 import DevicesCard, { impactLine, PriorityLozenge } from './DevicesCard.jsx';
@@ -126,6 +128,11 @@ function App() {
   const [aiStep, setAiStep] = useState('');
   const [patternView, setPatternView] = useState('categories');
   const [filter, setFilter] = useState(null); // drill-down: { id, label, value }
+  // Report filter and compare groups (ReportFilters.jsx), on breakdown fields.
+  const [filterFields, setFilterFields] = useState({ customers: [], internal: [] });
+  const [reportFilter, setReportFilter] = useState(NO_FILTER);
+  const [compare, setCompare] = useState(NO_COMPARE);
+  const [comparison, setComparison] = useState(null);
   const [siteUrl, setSiteUrl] = useState('');
   const [alerts, setAlerts] = useState([]);
   const [pendingRun, setPendingRun] = useState(null);
@@ -171,6 +178,7 @@ function App() {
       if (result?.licensed !== false) {
         invoke('getAlerts').then((a) => setAlerts(a?.alerts || [])).catch(() => {});
         invoke('getHealthBoard').then(setHealthBoard).catch(() => {});
+        invoke('getFilterFields').then((f) => setFilterFields(f || { customers: [], internal: [] })).catch(() => {});
       }
     }).catch((e) => setError(e.message || 'Could not load customer organisations.'))
       .finally(() => setLoadingOrgs(false));
@@ -265,8 +273,10 @@ function App() {
     setFilter(nextFilter);
     cancelFull.current = true;
     setLoadingReport(true); setError(''); setReport(null); setAi(null); setAiError(''); setFullRun(null); setFullError('');
-    setFlow(null); setFlowError(''); setTeam({ data: null, loading: false, error: '' }); setEscalation({ data: null, loading: false, error: '' });
-    const shared = { startDate: from, endDate: to, timeZone: LOCAL_ZONE, ...(nextFilter && { filter: { id: nextFilter.id, value: nextFilter.value } }) };
+    setFlow(null); setFlowError(''); setTeam({ data: null, loading: false, error: '' }); setEscalation({ data: null, loading: false, error: '' }); setComparison(null);
+    const fields = filterFields[internal ? 'internal' : 'customers'] || [];
+    const rf = activeFilter(reportFilter, fields);
+    const shared = { startDate: from, endDate: to, timeZone: LOCAL_ZONE, ...(nextFilter && { filter: { id: nextFilter.id, value: nextFilter.value } }), ...(rf && { reportFilter: rf }) };
     const query = internal
       ? { scope: 'internal', projects: internalProjects, clients, ...shared }
       : { organization: selectedOrg, organizations: selectedOrgs, projects, ...shared };
@@ -274,6 +284,16 @@ function App() {
       const result = await invoke('analyze', query);
       setReport(result);
       setLastQuery(query);
+      // Compare: the same report for each group (not while drilled into a value).
+      const groups = !nextFilter && activeCompare(compare, fields) ? compareGroups(compare, fields) : null;
+      if (groups) {
+        setComparison({ label: groups.label, loading: true });
+        Promise.all([groups.a, groups.b].map((g) => invoke('analyze', { ...query, filter: { id: g.id, value: g.value, exclude: g.exclude } })))
+          .then(([a, b]) => setComparison({ label: groups.label, reportFilter: rf, a: { name: groups.a.name, report: a }, b: { name: groups.b.name, report: b } }))
+          .catch((e) => setComparison({ label: groups.label, error: e.message || 'The comparison couldn’t be run.' }));
+      } else if (activeCompare(compare, fields)) {
+        setComparison({ label: fields.find((f) => f.id === compare.id)?.label || 'Group', error: 'Enter a value for group B: this field can’t compare a value with everything else.' });
+      }
       setFlowLoading(true);
       invoke('analyzeFlow', query).then(setFlow).catch((e) => setFlowError(e.message || 'Flow counts failed.')).finally(() => setFlowLoading(false));
       // Team performance is for internal analyses only.
@@ -374,6 +394,7 @@ function App() {
           actions: draft.actions.split('\n'),
         },
         live: draft.live,
+        reportFilter: lastQuery?.reportFilter || null,
         timeZone: LOCAL_ZONE,
         projects: lastQuery?.projects || [],
       });
@@ -722,6 +743,7 @@ function App() {
           {loadingReport ? 'Analysing…' : 'Run analysis'}
         </Button>
       </form>}
+      <FilterControls fields={filterFields[internal ? 'internal' : 'customers'] || []} filter={reportFilter} onFilter={setReportFilter} compare={compare} onCompare={setCompare} invoke={invoke} />
       {internal && (internalProjects.length > 0 || clients.length > 0) && <div className="ci-chips" aria-label="Selected projects and clients">
         {internalProjects.map((key) => <span className="ci-chip" key={key}>
           {projectList?.projects?.find((p) => p.key === key)?.name || key}
@@ -757,6 +779,7 @@ function App() {
           ? 'Using the default internal settings: the chosen projects have different project settings. Analyse them separately to use their own.'
           : 'Using the default internal settings.'}
     </p>}
+    {report?.reportFilter && <p className="nq-muted">Report filter: only tickets where <strong>{filterText(report.reportFilter)}</strong>. It’s kept if you publish this report to the portal.</p>}
     {filter && <Notice>
       <div className="nq-spread">
         <span>Showing only tickets where <strong>{filter.label}</strong> is <strong>{filter.value}</strong>.</span>
@@ -830,6 +853,8 @@ function App() {
             : <EmptyState compact title="No repeated patterns found in these tickets yet." />}
         </Card>
       </div>
+
+      <CompareCard comparison={comparison} />
 
       <HealthCard health={health} backlogLoading={flowLoading} includeInPdf={healthInPdf} onIncludeInPdf={setHealthInPdf} />
 

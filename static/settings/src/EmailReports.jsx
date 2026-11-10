@@ -5,6 +5,7 @@ import React, { useEffect, useState } from 'react';
 import { Button, Card, Field, Loading, Lozenge, Notice } from '@nuvriqo/ui/react';
 import { PRESETS } from '../../../src/dates.js';
 import { EMAIL_PERIODS } from '../../../src/email.js';
+import { EXCLUDABLE_KINDS as EXCLUDABLE } from '../../../src/settings.js';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const ZONE = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'; } catch { return 'UTC'; } })();
@@ -15,7 +16,7 @@ const describe = (s) => (s.frequency === 'manual' ? 'Send now only'
   : s.frequency === 'weekly' ? `Every ${DAYS[s.weekday - 1]} at ${String(s.hour).padStart(2, '0')}:00`
     : `Monthly on day ${s.dayOfMonth} at ${String(s.hour).padStart(2, '0')}:00`) + ` (${s.timeZone}) · ${periodLabel(s.period)}`;
 
-function ScheduleForm({ value, organizations, onSave, onCancel, saving }) {
+function ScheduleForm({ value, organizations, fields = [], onSave, onCancel, saving }) {
   const [s, setS] = useState({ ...blank(), ...value, internal: (value.internal || []).join?.(', ') ?? value.internal ?? '', customers: (value.customers || []).join?.(', ') ?? value.customers ?? '' });
   const [filter, setFilter] = useState('');
   const set = (change) => setS((x) => ({ ...x, ...change }));
@@ -80,6 +81,25 @@ function ScheduleForm({ value, organizations, onSave, onCancel, saving }) {
         <textarea id="cs-em-msg" className="nq-textarea" rows={2} value={s.message} onChange={(e) => set({ message: e.target.value })} />
       </Field>
     </div>
+    {fields.length > 0 && <div className="cs-row cs-row--pair">
+      <Field label="Only tickets where (optional)" htmlFor="cs-em-rf-field" help="For example, leave out history imported from another tool.">
+        <select id="cs-em-rf-field" className="nq-select" value={s.reportFilter?.id || ''} onChange={(e) => set({ reportFilter: e.target.value ? { id: e.target.value, value: s.reportFilter?.value || '', exclude: Boolean(s.reportFilter?.exclude) && EXCLUDABLE.includes(fields.find((f) => f.id === e.target.value)?.kind) } : null })}>
+          <option value="">All tickets</option>
+          {fields.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
+        </select>
+      </Field>
+      {s.reportFilter?.id && <div className="cs-row cs-row--pair">
+        <Field label="Is" htmlFor="cs-em-rf-op">
+          <select id="cs-em-rf-op" className="nq-select" value={s.reportFilter.exclude ? 'not' : 'is'} onChange={(e) => set({ reportFilter: { ...s.reportFilter, exclude: e.target.value === 'not' } })}>
+            <option value="is">is</option>
+            {EXCLUDABLE.includes(fields.find((f) => f.id === s.reportFilter.id)?.kind) && <option value="not">is not</option>}
+          </select>
+        </Field>
+        <Field label="Value" htmlFor="cs-em-rf-value">
+          <input id="cs-em-rf-value" className="nq-input" maxLength={120} value={s.reportFilter.value} onChange={(e) => set({ reportFilter: { ...s.reportFilter, value: e.target.value } })} />
+        </Field>
+      </div>}
+    </div>}
     <label className="cs-check"><input type="checkbox" className="nq-check" checked={s.ai} onChange={(e) => set({ ai: e.target.checked })} /><span>Include the AI summary (Atlassian-hosted AI; check the first few reports before sending to customers)</span></label>
     <label className="cs-check"><input type="checkbox" className="nq-check" checked={s.enabled} onChange={(e) => set({ enabled: e.target.checked })} /><span>Schedule on</span></label>
     <div className="nq-inline">
@@ -89,7 +109,7 @@ function ScheduleForm({ value, organizations, onSave, onCancel, saving }) {
   </div>;
 }
 
-export default function EmailReports({ invoke, organizations = [] }) {
+export default function EmailReports({ invoke, organizations = [], fields = [] }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [note, setNote] = useState('');
@@ -148,7 +168,7 @@ export default function EmailReports({ invoke, organizations = [] }) {
           <div><Button small disabled={!ready || !testTo || Boolean(busy)} onClick={() => run('test', () => invoke('sendScheduleNow', { id: data.schedules[0].id, testTo }), `Test queued to ${testTo}.`)}>Send test</Button></div>
         </div>}
         {editing
-          ? <ScheduleForm value={editing} organizations={organizations} saving={busy === 'save'} onCancel={() => setEditing(null)}
+          ? <ScheduleForm value={editing} organizations={organizations} fields={fields.filter((f) => !['organizations', 'client', 'requestType', 'cascading'].includes(f.kind))} saving={busy === 'save'} onCancel={() => setEditing(null)}
             onSave={(s) => run('save', async () => { await invoke('saveSchedule', { schedule: s }); setEditing(null); }, 'Schedule saved.')} />
           : <Button small onClick={() => setEditing(blank())}>Add a schedule</Button>}
       </div>

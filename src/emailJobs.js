@@ -2,7 +2,7 @@
 // analysis as the app, build the same PDF agents download, and send it through
 // Microsoft 365. Settings and schedules are admin-only (index.js).
 import { jsPDF } from 'jspdf';
-import { backlogFor, parseQuery, runAnalysis, satisfactionField } from './engine.js';
+import { backlogFor, filterFor, parseQuery, runAnalysis, satisfactionField } from './engine.js';
 import { analysisConfig } from './settings.js';
 import { applyMerges, categoriesOf } from './analysis.js';
 import { suggestCategories, suggestMerges, summarise } from './ai.js';
@@ -19,7 +19,7 @@ export async function schedulePdf(schedule, settings, now = new Date(), { intern
   const { from, to } = periodFor(schedule, now);
   const payload = { organization: schedule.organizations[0], organizations: schedule.organizations, startDate: from, endDate: to, timeZone: schedule.timeZone };
   const config = analysisConfig(settings, payload);
-  const query = parseQuery(payload);
+  const query = parseQuery(payload, filterFor(null, settings.breakdowns || [], schedule.reportFilter));
   const report = await runAnalysis(query, {
     breakdowns: settings.breakdowns || [], ...config.patterns, slaFields: config.slaFields, devices: settings.devices, channelField: settings.channelField || null,
     satisfactionId: await satisfactionField('app'), mode: 'app', budgetMs: 240000,

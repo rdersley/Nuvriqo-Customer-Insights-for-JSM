@@ -27,13 +27,27 @@ test('gives up after the last retry and returns the final answer', async () => {
 test('drill-down filters accept configured fields only and the JQL is built on the server', () => {
   const breakdowns = [{ id: 'customfield_10100', label: 'Base', kind: 'option' }];
   const filter = filterFor({ id: 'customfield_10100', value: 'STN' }, breakdowns);
-  assert.deepEqual(filter, { id: 'customfield_10100', label: 'Base', value: 'STN', clause: 'cf[10100] = "STN"' });
+  assert.deepEqual({ ...filter, drill: undefined }, { id: 'customfield_10100', label: 'Base', value: 'STN', exclude: false, drill: undefined, report: null, clause: 'cf[10100] = "STN"' });
   const query = parseQuery({ organization: { name: 'Ryanair Crew' }, startDate: '2026-09-01', endDate: '2026-09-30' }, filter);
   assert.equal(query.between('2026-09-01', '2026-10-01'), 'organizations = "Ryanair Crew" AND created >= "2026-09-01" AND created < "2026-10-01" AND cf[10100] = "STN"');
   assert.throws(() => filterFor({ id: 'customfield_99999', value: 'x' }, breakdowns), /isn’t available/);
-  assert.throws(() => filterFor({ id: 'customfield_10100', value: '' }, breakdowns), /isn’t available/);
+  assert.equal(filterFor({ id: 'customfield_10100', value: '' }, breakdowns), null); // no value: no filter
   assert.equal(filterFor(null, breakdowns), null);
   assert.equal(filterFor({ id: 'customfield_10100', value: 'STN" OR project = X' }, breakdowns).clause, 'cf[10100] = "STN\\" OR project = X"');
+});
+
+test('report filters: "is not" keeps tickets with no value, and combine with a drill-down', () => {
+  const breakdowns = [{ id: 'customfield_10100', label: 'Base', kind: 'option' }, { id: 'labels', label: 'Labels', kind: 'strings' }, { id: 'customfield_200', label: 'Org', kind: 'organizations' }];
+  const excluded = filterFor(null, breakdowns, { id: 'labels', value: 'imported-servicenow', exclude: true });
+  assert.equal(excluded.clause, '(labels is EMPTY OR labels != "imported-servicenow")');
+  assert.equal(excluded.drill, null);
+  assert.deepEqual(excluded.report, { id: 'labels', label: 'Labels', value: 'imported-servicenow', exclude: true });
+  const both = filterFor({ id: 'customfield_10100', value: 'STN' }, breakdowns, { id: 'labels', value: 'imported-servicenow', exclude: true });
+  assert.equal(both.clause, 'cf[10100] = "STN" AND (labels is EMPTY OR labels != "imported-servicenow")');
+  assert.equal(both.value, 'STN');
+  const query = parseQuery({ organization: { name: 'Acme' }, startDate: '2026-09-01', endDate: '2026-09-30' }, excluded);
+  assert.match(query.scopeJql, /AND \(labels is EMPTY OR labels != "imported-servicenow"\)$/);
+  assert.throws(() => filterFor(null, breakdowns, { id: 'customfield_200', value: 'Acme', exclude: true }), /can’t be used with “is not”/);
 });
 
 test('Retry-After is honoured but capped', () => {

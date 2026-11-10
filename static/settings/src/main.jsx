@@ -175,7 +175,7 @@ function App() {
 
       <PdfLogos invoke={invoke} organizations={state.organizations || []} />
 
-      <EmailReports invoke={invoke} organizations={state.organizations || []} />
+      <EmailReports invoke={invoke} organizations={state.organizations || []} fields={state.settings?.breakdowns || []} />
 
       </>}
 

@@ -483,8 +483,18 @@ export async function fakeJira(route, init = {}, now = Date.now()) {
   if (base === '/rest/servicedeskapi/servicedesk') return json({ values: [{ id: '1', projectKey: 'SUP', projectName: 'Client Support' }], isLastPage: true });
   if (base === '/rest/api/3/project/search') return json({ values: SAMPLE_PROJECTS, isLast: true });
   if (base === '/rest/api/3/jql/autocompletedata/suggestions') {
+    // Values a field has on the sample tickets (clients, sites, categories, priorities…).
     const text = String(params.get('fieldValue') || '').toLowerCase();
-    return json({ results: SAMPLE_ORGS.filter((o) => o.name.toLowerCase().includes(text)).map((o) => ({ value: `"${o.name}"`, displayName: o.name })) });
+    const name = String(params.get('fieldName') || '').toLowerCase();
+    const values = new Set();
+    for (const t of sampleTickets(now)) {
+      const issue = t.issue || (t.issue = issueOf(t, now));
+      const v = fieldValue(issue, t, name);
+      for (const x of Array.isArray(v) ? v : [v]) if (x && typeof x === 'string') values.add(x);
+      if (values.size > 200) break;
+    }
+    const results = [...values].filter((v) => v.toLowerCase().includes(text)).sort().slice(0, 30);
+    return json({ results: results.map((v) => ({ value: `"${v}"`, displayName: v })) });
   }
   if (base === '/rest/servicedeskapi/knowledgebase/article') {
     const words = String(params.get('query') || '').toLowerCase().split(/\s+/).filter(Boolean);

@@ -8,6 +8,7 @@ import { median, patternTrend } from './analysis.js';
 import { presetRange, PRESETS } from './dates.js';
 import { validTimeZone } from './timeOfDay.js';
 import { LIVE_SCHEDULES } from './publish.js';
+import { filterText } from './settings.js';
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 const EXAMPLES = 5;
@@ -39,6 +40,8 @@ export function liveConfigFrom(input, { organization, projects = [], now = new D
     ...(schedule === 'off' ? { period: { from, to } } : {}),
     // The publishing agent's time zone: refreshes show customers when requests arrive in it.
     timeZone: validTimeZone(input?.timeZone),
+    // Report filter (e.g. Source is not Imported from ServiceNow), checked when published.
+    reportFilter: input?.reportFilter || null,
     approved: (Array.isArray(input?.approved) ? input.approved : [])
       .map((a) => ({ title: clip(a?.title, 80), summary: clip(a?.summary, 300) }))
       .filter((a) => a.title)
@@ -142,6 +145,7 @@ export function refreshedSnapshotInput(config, report, counts, now = new Date(),
     publishedAt: config.publishedAt,
     summaryWrittenAt: config.summaryWrittenAt,
     refreshedAt: now.toISOString(),
+    filterNote: config.reportFilter ? filterText(config.reportFilter) : '',
     live: isLive(config) ? { preset: config.preset, schedule: config.schedule } : null,
     unreviewed: counts.unreviewed,
     resolution: report.resolution || null,

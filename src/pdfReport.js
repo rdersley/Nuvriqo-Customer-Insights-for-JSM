@@ -5,6 +5,7 @@ import { median, patternTrend, topShares } from './analysis.js';
 import { duration, trendWord } from './trend.js';
 import { DAYS, hoursOf, outOfHoursShare, peakWindow, windowText } from './timeOfDay.js';
 import { gridSummary } from './channels.js';
+import { filterText } from './settings.js';
 
 /** Per contact channel rows for the PDF: share, busiest hours and day, out of hours. */
 const channelRows = (byChannel) => (Array.isArray(byChannel) ? byChannel : []).map((c) => {
@@ -66,7 +67,8 @@ export function pdfContent({ report, groups = report?.groups || [], ai = null, g
   };
 
   const notes = [];
-  if (filter) notes.push(`Only tickets where ${filter.label} is ${filter.value}.`);
+  if (report.reportFilter) notes.push(`Only tickets where ${filterText(report.reportFilter)}.`);
+  if (filter) notes.push(`Only tickets where ${filterText(filter)}.`);
   if (report.sampled) notes.push(`Patterns come from ${report.analyzedCount.toLocaleString('en-GB')} of ${report.currentCount.toLocaleString('en-GB')} tickets, sampled evenly across the period. Sizes marked ~ are estimates; ticket totals and the comparison are exact.`);
   if (ai) notes.push('Issue names and the overview are AI-generated from pattern names, counts and example summaries. Check the linked tickets before sharing.');
 

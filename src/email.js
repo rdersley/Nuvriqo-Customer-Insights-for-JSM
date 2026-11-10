@@ -3,6 +3,7 @@
 // rules (validation, when a schedule is due, the period it covers, the message);
 // the Microsoft calls are in graph.js and the job in emailJobs.js.
 import { presetRange, PRESETS } from './dates.js';
+import { cleanFilter } from './settings.js';
 import { validTimeZone } from './timeOfDay.js';
 
 export const MAX_SCHEDULES = 30;
@@ -65,6 +66,8 @@ export function sanitizeSchedule(input, organizations = [], { now = new Date() }
     internal,
     customers,
     ai: input?.ai === true,
+    // Only tickets matching this (a breakdown field value, or not it); checked when the report runs.
+    reportFilter: cleanFilter(input?.reportFilter),
     subject: clip(input?.subject, 150),
     message: String(input?.message ?? '').replace(/\r\n/g, '\n').trim().slice(0, 2000),
   };
