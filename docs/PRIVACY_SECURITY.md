@@ -1,6 +1,18 @@
 # Privacy & Security answers: Nuvriqo Customer Insights
 
-Draft answers for the Marketplace Privacy & Security tab. The form ignores automated input, so these are typed in by hand. Check each against the code before submitting. This is not legal advice.
+Answers for the Marketplace Privacy & Security tab. Check each against the code before submitting. This is not legal advice.
+
+## As submitted for review, November 2026 (Marketplace 6.3.0)
+
+Changed from the October answers (approved 12 October 2026), because of email reports:
+- **Processes End-User Data outside Atlassian:** Yes. The report PDF sent by email through the customer's own Microsoft 365 (organisation name, ticket counts and trends, issue names, example ticket keys and summaries), and the email addresses of report recipients entered by a Jira admin. Processed, not stored, outside Atlassian.
+- **Data residency, in-scope data:** added customer health scores, PDF logos, and email report schedules including recipient email addresses. Storage is still Atlassian only.
+- **GDPR data processor / CCPA service provider:** added email addresses of report recipients, entered by a Jira admin.
+- **Transfers EEA residents' data outside the EEA:** Yes (owner's decision, 10 November 2026): Forge compute location isn't chosen by us, and email is delivered by the customer's Microsoft 365 tenant. Mechanism: Standard Contractual Clauses (SCCs), through Atlassian's Forge terms and the customer's own Microsoft 365 agreement.
+- **Privacy-enhancing technologies:** No.
+- **Scope justification:** rewritten to cover the Internal tab, ticket history, knowledge base search, surge tickets with links and comments, the storage contents and the Microsoft 365 connection (see the Egress justification below).
+
+The form accepts typed input (Claude in Chrome typed these); the final consent tick and Submit and publish are done by the owner.
 
 ## Data storage
 
